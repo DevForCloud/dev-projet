@@ -9,7 +9,10 @@ const {
   getNodeAutoInstrumentations,
 } = require("@opentelemetry/auto-instrumentations-node");
 
-const serviceName = process.env.OTEL_SERVICE_NAME || "api-gateway";
+const serviceName =
+  process.env.API_GATEWAY_OTEL_SERVICE_NAME ||
+  process.env.OTEL_SERVICE_NAME ||
+  "api-gateway";
 const serviceVersion = require("../package.json").version;
 const otlpEndpoint = (
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://otel-collector:4318"
