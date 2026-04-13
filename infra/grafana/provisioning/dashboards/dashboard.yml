@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: TaskFlow dashboards
+    orgId: 1
+    folder: TaskFlow
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
