@@ -7,6 +7,7 @@ const pinoHttp = require("pino-http");
 const routes = require("./routes");
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
+const ERROR_CODE = 500;
 const app = express();
 
 app.use(express.json());

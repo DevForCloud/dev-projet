@@ -7,6 +7,7 @@ const pinoHttp = require("pino-http");
 const authMiddleware = require("./auth");
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
+const ERROR_CODE = 500;
 const app = express();
 
 const USER_SERVICE_URL =
