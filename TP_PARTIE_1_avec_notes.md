@@ -69,6 +69,9 @@ Architecture multi-services pour apprendre Kubernetes, l'observabilité et le CI
   - Les dashboards, préférences, etc.. doivent persistés
   5. Faire s'attendre entre eux les services qui le nécessite pour éviter des erreurs au démarrage.
 
+
+On utilise OpenTelemetry pour récupérer les traces des services et les envoyer au Collector. Le Collector exporte les traces vers Tempo, qui les stocke. En parallèle, Prometheus scrape les endpoints de métriques des services et du Collector. Grafana se connecte à Tempo pour visualiser les traces et à Prometheus pour visualiser les métriques.
+
 ### B. Visualisation de l'application
 
 #### Metriques
@@ -121,6 +124,65 @@ Réalisez le scénario suivant et documentez ce que vous observez :
 - Identifier la chaîne de spans (api-gateway → task-service → postgres)
 - Commenter, expliquer les attributs (http.method, http.route, db.statement, etc ...)
 
+![alt text](./images/Screenshot%20from%202026-04-14%2011-21-43.png)
+
+Response: 
+Après avoir créé une tâche depuis le frontend, j’ai retrouvé la trace en filtrant sur le service `api-gateway` et la route `POST /api/tasks`.
+
+La trace montre la chaîne de spans suivante :
+
+- `api-gateway` reçoit la requête HTTP `POST /api/tasks` et transmet ensuite la requête vers `task-service` via HTTP, ce qui génère un nouveau span dans `task-service` avec la route `/tasks`.
+- `task-service` reçoit la requête et exécute une requête SQL pour insérer la tâche en base de données.
+
+Les attributs observés permettent de comprendre le chemin de la requête :
+Par exemple pour api-gateway POST /api/tasks :
+```
+| Attribut | Valeur |
+|---|---|
+| `http.flavor` | `"1.1"` |
+| `http.host` | `"localhost"` |
+| `http.method` | `"POST"` |
+| `http.request_content_length_uncompressed` | `195` |
+| `http.route` | `"/api/tasks"` |
+| `http.scheme` | `"http"` |
+| `http.status_code` | `201` |
+| `http.status_text` | `"CREATED"` |
+| `http.target` | `"/api/tasks"` |
+| `http.url` | `"http://localhost/api/tasks"` |
+| `http.user_agent` | `"Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0"` |
+| `net.host.ip` | `"::ffff:172.24.0.7"` |
+| `net.host.name` | `"localhost"` |
+| `net.host.port` | `3000` |
+| `net.peer.ip` | `"::ffff:172.24.0.8"` |
+| `net.peer.port` | `54784` |
+| `net.transport` | `"ip_tcp"` |
+
+```
+- `resource.service.name` indique le service qui a produit le span, par exemple `api-gateway` ou `task-service`.
+- `http.method` vaut `POST`, ce qui correspond à la création d’une tâche.
+- `http.route` indique la route traitée, par exemple `/api/tasks` côté gateway et `/tasks` côté task-service.
+- `http.status_code` indique le résultat HTTP.
+
+ensuite pour le span PostgreSQL INSERT taskflow :
+```
+| Attribut | Valeur |
+|---|---|
+| `db.connection_string` | `"postgresql://postgres:5432/taskflow"` |
+| `db.name` | `"taskflow"` |
+| `db.statement` | `"INSERT INTO tasks (title, description, priority, assignee_id, due_date, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *"` |
+| `db.system` | `"postgresql"` |
+| `db.user` | `"taskflow"` |
+| `net.peer.name` | `"postgres"` |
+| `net.peer.port` | `5432` |
+
+```
+- `db.connection_string` montre la chaîne de connexion utilisée pour accéder à la base de données.
+- `db.name` indique le nom de la base de données utilisée, ici `taskflow`.
+- `db.statement` montre la requête SQL exécutée, par exemple un `INSERT INTO tasks (...)`.
+- `db.system` indique le système de base de données utilisé, ici PostgreSQL.
+- `db.user` montre l’utilisateur de la base de données qui a exécuté la requête, ici `taskflow`.
+- Les spans HTTP montrent la propagation de la requête entre les services, tandis que le span PostgreSQL montre l’accès à la base de données.
+
 ##### Ajout de spans custom
 
 L'auto-instrumentation couvre déjà HTTP et PostgreSQL. Redis/pub-sub n'est pas toujours auto-instrumenté.
@@ -137,6 +199,8 @@ span.end();
 ```
 
 - Retrouver ce span dans la vue distribuée d'une trace dans Grafana
+
+![alt text](./images/Screenshot%20from%202026-04-14%2011-54-36.png)
 
 ### C. Ajout des Logs
 
@@ -172,23 +236,125 @@ Ajouter Promtail et Loki pour voir les logs dans Grafana
 
 - Dans Grafana > Explore, sélectionner la datasource Loki, filtrer les logs du task-service uniquement.
   - Quelle syntaxe LogQL est utilisée ?
+
+```logql
+{service="task-service"}
+```
+
   - Quelle différence y a-t-il avec une requête Prometheus ?
 
+Prometheus interroge des métriques numériques avec PromQL, par exemple :
+
+```promql
+http_requests_total{status="500"}
+```
+
+Loki interroge des logs avec LogQL, par exemple :
+
+```logql
+{service="task-service"} |= "request failed"
+```
+
+Prometheus est plus adapté pour mesurer, agréger et alerter. Loki est plus adapté pour lire le détail des événements et comprendre les erreurs.
+
+
 - Déclencher une erreur volontairement (ex: créer une tâche sans title). Retrouver le log d'erreur correspondant dans Loki.
+
+```bash
+curl -X POST http://localhost:3002/tasks \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
   - Quelle requête utiliser pour filtrer ?
+
+Créer une tâche sans `title` retourne un `400`, donc la requête LogQL est :
+
+```logql
+{service="task-service"} | json statusCode="res.statusCode" | statusCode = `400`
+```
+
+Pour filtrer sur le message d'échec :
+
+```logql
+{service="task-service"} |= "request failed"
+```
 
 - Écrire une requête LogQL qui affiche uniquement les logs de niveau error sur tous les services à la fois. Grâce à pino, les services loggent en JSON. Écrire une requête qui extrait et filtre sur le champ statusCode pour ne voir que les requêtes ayant retourné un 500.
   - Comparer :
     - Dans Prometheus http_requests_total{status="500"}.
     - Dans Loki, comment obtenir l'équivalent en passant par les logs ?
+
+Logs de niveau `error` sur tous les services applicatifs :
+
+```logql
+{service=~"api-gateway|user-service|task-service|notification-service", level="error"}
+```
+
+Équivalent Loki pour les requêtes HTTP ayant retourné un `500` :
+
+```logql
+{service=~"api-gateway|user-service|task-service|notification-service"} | json statusCode="res.statusCode" | statusCode = `500`
+```
+
+Équivalent Prometheus :
+
+```promql
+http_requests_total{status="500"}
+```
+
+Ou, pour mesurer un taux d'erreurs :
+
+```promql
+sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+```
+
   - Entre ces deux approches, laquelle est la plus adaptée et pourquoi ?
 
+Prometheus est plus adapté pour détecter et alerter sur un pic d'erreurs, car il est optimisé pour les métriques, les taux et les agrégations.
+
+Loki est plus adapté pour investiguer le détail des erreurs : message, route, stack trace, `trace_id`, payload, etc.
+
 - Effectuer une requête POST /api/tasks. Dans Tempo, retrouver la trace correspondante et noter son traceId.
+
+```json
+{
+  "trace_id": "a22fec1964b10a76a73998c3e61b664b"
+}
+```
+
   - Peut-on retrouver ce traceId dans les logs Loki ?
+
+Oui, si le log contient le champ `trace_id`.
+
+```logql
+{service="task-service"} |= "a22fec1964b10a76a73998c3e61b664b"
+```
+
   - Que faudrait-il configurer pour que ce soit automatique ?
+
+Il faut configurer les `derived fields` dans la datasource Loki de Grafana pour détecter automatiquement le champ `trace_id` et créer un lien vers Tempo.
 
 - Mettons que l'on observe un pic d'erreurs dans le dashboard Prometheus.
   - Décrire la démarche pour investiguer : par où commencer, comment utiliser métriques, logs et traces ?
+
+1. Identifier le service en erreur avec Prometheus :
+
+```promql
+sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+```
+
+2. Aller dans Loki et filtrer les logs du service :
+
+```logql
+{service="task-service", level="error"}
+```
+
+3. Extraire ou copier le `trace_id` du log.
+
+4. Aller dans Tempo et rechercher la trace avec ce `trace_id`.
+
+5. Lire la trace pour trouver où l'erreur apparaît : `api-gateway`, `task-service`, PostgreSQL, Redis, etc.
 
 ## Cheat sheet PromQL · LogQL · TraceQL
 
@@ -251,42 +417,42 @@ sum by(job) (rate(http_requests_total{route!="/metrics"}[5m]))
 
 ```logql
 # Filtrer les logs d'un service
-{job="<your-service>"}
+{service="<your-service>"}
 
 # Filtres multiples
-{job="<your-service>", container="<container-name>"}
+{service="<your-service>", container="<container-name>"}
 
 # Filtrer sur le contenu du log
-{job="<your-service>"} |= "error"
+{service="<your-service>"} |= "error"
 
 # Exclure un pattern
-{job="<your-service>"} != "GET /metrics"
+{service="<your-service>"} != "GET /metrics"
 
 # Filtre regex
-{job="<your-service>"} |~ "status.*5[0-9]{2}"
+{service="<your-service>"} |~ "status.*5[0-9]{2}"
 ```
 
 #### Parsing JSON
 
 ```logql
 # Parser le JSON et filtrer sur un champ
-{job="<your-service>"} | json | level="error"
+{service="<your-service>"} | json | level="error"
 
 # Filtrer sur le code HTTP
-{job="<your-service>"} |~ `"statusCode":500`
+{service="<your-service>"} | json statusCode="res.statusCode" | statusCode = `500`
 
 # Tous les services, erreurs uniquement
-{job=~".+"} | json | level="error"
+{service=~".+", level="error"}
 
 # Requêtes en 500 sur tous les services
-{job=~".+"} | json | statusCode >= 500
+{service=~".+"} | json statusCode="res.statusCode" | statusCode = `500`
 ```
 
 #### Requêtes métriques (LogQL → graphe)
 
 ```logql
 # Taux d'erreurs dans le temps sur tous les services
-sum(rate({job=~".+"} | json | level="error" [5m])) by (job)
+sum by (service) (count_over_time({service=~".+", level="error"}[5m]))
 ```
 
 ### TraceQL — Traces (Tempo)
@@ -344,7 +510,7 @@ sum(rate({job=~".+"} | json | level="error" [5m])) by (job)
    "Le taux d'erreurs a augmenté sur <service> à 14h32"
 
 2. LOGS (Loki)             → comprendre ce qui s'est passé
-   {job="<service>"} | json | level="error"
+   {service="<service>", level="error"}
    → "Cannot connect to database"
 
 3. TRACES (Tempo)          → localiser la requête exacte
