@@ -36,6 +36,25 @@ services:
     depends_on:
       - otel-collector
 
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3101:3100"
+    volumes:
+      - ./infra/loki/loki-config.yml:/etc/loki/loki.yml
+      - loki_data:/loki
+
+  promtail:
+    image: grafana/promtail:latest
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./infra/promtail/promtail-config.yml:/etc/promtail/promtail.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -50,8 +69,10 @@ services:
     depends_on:
       - prometheus
       - tempo
+      - loki
 
 volumes:
   tempo_data:
   prometheus_data:
   grafana_data:
+  loki_data:
