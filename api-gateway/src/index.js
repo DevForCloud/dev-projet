@@ -1,5 +1,5 @@
 require("./tracing");
-const { register } = require("./metrics");
+const { register, upstreamErrorsTotal, httpRequestsTotal, httpRequestDurationMs } = require("./metrics");
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const pino = require("pino");
@@ -9,12 +9,24 @@ const authMiddleware = require("./auth");
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 const app = express();
 
+const ERROR_CODE = 400;
+
 const USER_SERVICE_URL =
   process.env.USER_SERVICE_URL || "http://localhost:3001";
 const TASK_SERVICE_URL =
   process.env.TASK_SERVICE_URL || "http://localhost:3002";
 const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3003";
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const labels = { method: req.method, route: req.path, status: res.statusCode };
+    httpRequestsTotal.inc(labels);
+    httpRequestDurationMs.observe(labels, Date.now() - start);
+  });
+  next();
+});
 
 app.use(
   pinoHttp({
@@ -56,6 +68,7 @@ app.use(
     on: {
       error: (err, req, res) => {
         logger.error({ err }, "user-service proxy error");
+        upstreamErrorsTotal.inc({ service: 'user-service' });
         res.status(502).json({ error: "user-service unavailable" });
       },
     },
@@ -72,6 +85,7 @@ app.use(
     on: {
       error: (err, req, res) => {
         logger.error({ err }, "task-service proxy error");
+        upstreamErrorsTotal.inc({ service: 'task-service' });
         res.status(502).json({ error: "task-service unavailable" });
       },
     },
@@ -88,6 +102,7 @@ app.use(
     on: {
       error: (err, req, res) => {
         logger.error({ err }, "notification-service proxy error");
+        upstreamErrorsTotal.inc({ service: 'notification-service' });
         res.status(502).json({ error: "notification-service unavailable" });
       },
     },

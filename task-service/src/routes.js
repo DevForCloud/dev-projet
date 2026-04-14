@@ -1,8 +1,16 @@
 const express = require("express");
 const db = require("./db");
 const { publish } = require("./publisher");
+const { tasksCreatedTotal, tasksStatusChangesTotal, tasksGauge } = require("./metrics");
 
 const router = express.Router();
+
+async function refreshTasksGauge() {
+  const result = await db.query("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status");
+  for (const row of result.rows) {
+    tasksGauge.set({ status: row.status }, parseInt(row.count, 10));
+  }
+}
 
 // GET /tasks
 router.get("/", async (req, res) => {
@@ -68,6 +76,9 @@ router.post("/", async (req, res) => {
     );
     const task = result.rows[0];
 
+    tasksCreatedTotal.inc({ priority: task.priority });
+    await refreshTasksGauge();
+
     await publish("task.created", {
       taskId: task.id,
       title: task.title,
@@ -114,6 +125,8 @@ router.patch("/:id", async (req, res) => {
     const task = result.rows[0];
 
     if (status && status !== current.rows[0].status) {
+      tasksStatusChangesTotal.inc({ from_status: current.rows[0].status, to_status: status });
+      await refreshTasksGauge();
       await publish("task.status_changed", {
         taskId: task.id,
         oldStatus: current.rows[0].status,
@@ -137,6 +150,7 @@ router.delete("/:id", async (req, res) => {
     );
     if (!result.rows[0])
       return res.status(404).json({ error: "Task not found" });
+    await refreshTasksGauge();
     res.status(204).send();
   } catch (err) {
     res.status(500).json({ error: "Internal server error" });
