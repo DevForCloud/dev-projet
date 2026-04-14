@@ -1,6 +1,7 @@
 services:
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.4.1
+    user: "0:0"
     command: ["-config.file=/etc/tempo/tempo.yml"]
     ports:
       - "3200:3200"
@@ -8,7 +9,7 @@ services:
       - "4317"
     volumes:
       - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml
-      - tempo_data:/tmp/tempo
+      - tempo_data:/var/tempo
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest

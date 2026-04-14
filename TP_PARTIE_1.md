@@ -69,6 +69,9 @@ Architecture multi-services pour apprendre Kubernetes, l'observabilité et le CI
   - Les dashboards, préférences, etc.. doivent persistés
   5. Faire s'attendre entre eux les services qui le nécessite pour éviter des erreurs au démarrage.
 
+
+On utilise OpenTelemetry pour récupérer les traces des services et les envoyer au Collector. Le Collector exporte les traces vers Tempo, qui les stocke. En parallèle, Prometheus scrape les endpoints de métriques des services et du Collector. Grafana se connecte à Tempo pour visualiser les traces et à Prometheus pour visualiser les métriques.
+
 ### B. Visualisation de l'application
 
 #### Metriques
@@ -121,6 +124,65 @@ Réalisez le scénario suivant et documentez ce que vous observez :
 - Identifier la chaîne de spans (api-gateway → task-service → postgres)
 - Commenter, expliquer les attributs (http.method, http.route, db.statement, etc ...)
 
+![alt text](./images/Screenshot%20from%202026-04-14%2011-21-43.png)
+
+Response: 
+Après avoir créé une tâche depuis le frontend, j’ai retrouvé la trace en filtrant sur le service `api-gateway` et la route `POST /api/tasks`.
+
+La trace montre la chaîne de spans suivante :
+
+- `api-gateway` reçoit la requête HTTP `POST /api/tasks` et transmet ensuite la requête vers `task-service` via HTTP, ce qui génère un nouveau span dans `task-service` avec la route `/tasks`.
+- `task-service` reçoit la requête et exécute une requête SQL pour insérer la tâche en base de données.
+
+Les attributs observés permettent de comprendre le chemin de la requête :
+Par exemple pour api-gateway POST /api/tasks :
+```
+| Attribut | Valeur |
+|---|---|
+| `http.flavor` | `"1.1"` |
+| `http.host` | `"localhost"` |
+| `http.method` | `"POST"` |
+| `http.request_content_length_uncompressed` | `195` |
+| `http.route` | `"/api/tasks"` |
+| `http.scheme` | `"http"` |
+| `http.status_code` | `201` |
+| `http.status_text` | `"CREATED"` |
+| `http.target` | `"/api/tasks"` |
+| `http.url` | `"http://localhost/api/tasks"` |
+| `http.user_agent` | `"Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0"` |
+| `net.host.ip` | `"::ffff:172.24.0.7"` |
+| `net.host.name` | `"localhost"` |
+| `net.host.port` | `3000` |
+| `net.peer.ip` | `"::ffff:172.24.0.8"` |
+| `net.peer.port` | `54784` |
+| `net.transport` | `"ip_tcp"` |
+
+```
+- `resource.service.name` indique le service qui a produit le span, par exemple `api-gateway` ou `task-service`.
+- `http.method` vaut `POST`, ce qui correspond à la création d’une tâche.
+- `http.route` indique la route traitée, par exemple `/api/tasks` côté gateway et `/tasks` côté task-service.
+- `http.status_code` indique le résultat HTTP.
+
+ensuite pour le span PostgreSQL INSERT taskflow :
+```
+| Attribut | Valeur |
+|---|---|
+| `db.connection_string` | `"postgresql://postgres:5432/taskflow"` |
+| `db.name` | `"taskflow"` |
+| `db.statement` | `"INSERT INTO tasks (title, description, priority, assignee_id, due_date, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *"` |
+| `db.system` | `"postgresql"` |
+| `db.user` | `"taskflow"` |
+| `net.peer.name` | `"postgres"` |
+| `net.peer.port` | `5432` |
+
+```
+- `db.connection_string` montre la chaîne de connexion utilisée pour accéder à la base de données.
+- `db.name` indique le nom de la base de données utilisée, ici `taskflow`.
+- `db.statement` montre la requête SQL exécutée, par exemple un `INSERT INTO tasks (...)`.
+- `db.system` indique le système de base de données utilisé, ici PostgreSQL.
+- `db.user` montre l’utilisateur de la base de données qui a exécuté la requête, ici `taskflow`.
+- Les spans HTTP montrent la propagation de la requête entre les services, tandis que le span PostgreSQL montre l’accès à la base de données.
+
 ##### Ajout de spans custom
 
 L'auto-instrumentation couvre déjà HTTP et PostgreSQL. Redis/pub-sub n'est pas toujours auto-instrumenté.
@@ -137,6 +199,8 @@ span.end();
 ```
 
 - Retrouver ce span dans la vue distribuée d'une trace dans Grafana
+
+![alt text](./images/Screenshot%20from%202026-04-14%2011-54-36.png)
 
 ### C. Ajout des Logs
 
