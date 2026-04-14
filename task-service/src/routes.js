@@ -1,4 +1,5 @@
 const express = require("express");
+const { trace } = require("@opentelemetry/api");
 const db = require("./db");
 const { publish } = require("./publisher");
 const {
@@ -8,6 +9,7 @@ const {
 } = require("./metrics");
 
 const router = express.Router();
+const tracer = trace.getTracer("task-service");
 
 async function updateTasksGauge() {
   const result = await db.query(
@@ -91,11 +93,16 @@ router.post("/", async (req, res) => {
     tasksCreatedTotal.inc({ priority: task.priority });
     await updateTasksGauge();
 
-    await publish("task.created", {
-      taskId: task.id,
-      title: task.title,
-      assigneeId: task.assignee_id,
-    });
+    const span = tracer.startSpan("publish.task.created");
+    try {
+      await publish("task.created", {
+        taskId: task.id,
+        title: task.title,
+        assigneeId: task.assignee_id,
+      });
+    } finally {
+      span.end();
+    }
 
     res.status(201).json(task);
   } catch (err) {
@@ -141,12 +148,17 @@ router.patch("/:id", async (req, res) => {
         from_status: current.rows[0].status,
         to_status: status,
       });
-      await publish("task.status_changed", {
-        taskId: task.id,
-        oldStatus: current.rows[0].status,
-        newStatus: status,
-        assigneeId: task.assignee_id,
-      });
+      const span = tracer.startSpan("publish.task.status_changed");
+      try {
+        await publish("task.status_changed", {
+          taskId: task.id,
+          oldStatus: current.rows[0].status,
+          newStatus: status,
+          assigneeId: task.assignee_id,
+        });
+      } finally {
+        span.end();
+      }
     }
 
     await updateTasksGauge();

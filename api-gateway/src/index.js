@@ -1,5 +1,10 @@
 require("./tracing");
-const { register, upstreamErrorsTotal } = require("./metrics");
+const {
+  register,
+  httpRequestsTotal,
+  httpRequestDurationMs,
+  upstreamErrorsTotal,
+} = require("./metrics");
 const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const pino = require("pino");
@@ -16,6 +21,27 @@ const TASK_SERVICE_URL =
   process.env.TASK_SERVICE_URL || "http://localhost:3002";
 const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3003";
+
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+    const route = req.route
+      ? `${req.baseUrl || ""}${req.route.path}`
+      : req.baseUrl || req.path || "unknown";
+    const labels = {
+      method: req.method,
+      route,
+      status: String(res.statusCode),
+    };
+
+    httpRequestsTotal.inc(labels);
+    httpRequestDurationMs.observe(labels, durationMs);
+  });
+
+  next();
+});
 
 app.use(
   pinoHttp({

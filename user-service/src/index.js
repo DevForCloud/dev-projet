@@ -1,5 +1,5 @@
 require("./tracing");
-const { register } = require("./metrics");
+const { register, httpRequestsTotal, httpRequestDurationMs } = require("./metrics");
 const express = require("express");
 const pino = require("pino");
 const pinoHttp = require("pino-http");
@@ -11,6 +11,26 @@ const ERROR_CODE = 500;
 const app = express();
 
 app.use(express.json());
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+    const route = req.route
+      ? `${req.baseUrl || ""}${req.route.path}`
+      : req.baseUrl || req.path || "unknown";
+    const labels = {
+      method: req.method,
+      route,
+      status: String(res.statusCode),
+    };
+
+    httpRequestsTotal.inc(labels);
+    httpRequestDurationMs.observe(labels, durationMs);
+  });
+
+  next();
+});
 app.use(
   pinoHttp({
     logger,
