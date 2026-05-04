@@ -33,10 +33,10 @@ La latence p95 doit etre lue dans le resume terminal k6, ligne `http_req_duratio
 Resultat observe:
 
 ```text
-A completer apres execution k6.
+http_req_duration: avg=20.14ms min=6.8ms med=16.84ms max=44.6ms p(90)=38.9ms p(95)=42.05ms
 ```
 
-Interpretation attendue: si `p(95) < 200ms`, le test leger reste dans le seuil acceptable demande.
+Interpretation: la p95 vaut `42.05ms`, donc le test leger reste largement sous le seuil acceptable de `200ms`.
 
 ### Question 2 - Le taux `http_req_failed` est-il à 0 % ? Si non, quel code d'erreur observez-vous ?
 
@@ -45,10 +45,11 @@ Le taux `http_req_failed` doit etre lu dans le resume terminal k6.
 Resultat observe:
 
 ```text
-A completer apres execution k6.
+http_req_failed: 0.00% 0 out of 150
+checks_failed: 0.00% 0 out of 300
 ```
 
-Interpretation attendue: `0.00%` signifie qu'aucune requete HTTP n'a echoue. Si le taux n'est pas nul, regarder les checks et les statuts HTTP retournes.
+Interpretation: aucune requete HTTP n'a echoue et tous les checks sont passes. Aucun code d'erreur n'a ete observe pendant le test leger.
 
 ## Étape 2 — Monter la charge progressivement
 
@@ -74,10 +75,26 @@ Dans le resume k6, il faut regarder:
 Resultat observe:
 
 ```text
-A completer apres execution k6.
+HIGH_VUS=50:
+checks_failed: 0.00% 0 out of 12528
+tasks response < 500ms: 100% de succes
+http_req_duration p(95)=73.52ms
+http_req_failed: 0.00% 0 out of 8352
+
+HIGH_VUS=100:
+checks_failed: 7.32% 1157 out of 15804
+tasks response < 500ms: 56% de succes, 1477 succes / 1157 echecs
+http_req_duration p(95)=1.67s
+http_req_failed: 0.00% 0 out of 10536
+
+HIGH_VUS=200:
+checks_failed: 13.03% 1712 out of 13134
+tasks response < 500ms: 21% de succes, 477 succes / 1712 echecs
+http_req_duration p(95)=5.2s
+http_req_failed: 0.00% 0 out of 8756
 ```
 
-Interpretation attendue: le stade a reporter est le premier niveau de VUs ou le check `tasks response < 500ms` commence a echouer massivement. La p95 finale est la valeur `p(95)` de `http_req_duration` dans le resume terminal k6, pas la latence Grafana.
+Interpretation: le check `tasks response < 500ms` commence a echouer massivement a partir de `HIGH_VUS=100`. A `50` VUs, tous les checks passent encore. A `100` VUs, `1157` checks echouent et la p95 finale monte a `1.67s`. A `200` VUs, la degradation est confirmee avec une p95 a `5.2s` et seulement `21%` de succes pour le check `tasks response < 500ms`. Le taux `http_req_failed` reste pourtant a `0.00%`, ce qui montre que le serveur repond encore en HTTP, mais trop lentement pour respecter le seuil applicatif.
 
 ### Question 4 - Dans Grafana, observez le panel **Request Rate per Service** au pic de charge. L'`api-gateway` reçoit environ 2× plus de trafic que le `task-service` et 4× plus que le `user-service`. Expliquez pourquoi en vous appuyant sur le script de test : combien de requêtes par service sont émises à chaque itération ?
 
@@ -131,6 +148,20 @@ Bind for 0.0.0.0:3002 failed: port is already allocated
 
 Ligne responsable: `docker-compose.yml`, service `task-service`, section `ports`.
 
+Dans l'etat actuel du repository, cette correction est deja appliquee: `task-service` utilise `expose: "3002"` au lieu de publier `3002:3002`. Le scaling observe avec la commande suivante a donc demarre correctement les trois replicas:
+
+```bash
+docker compose up -d --scale task-service=3
+```
+
+Resultat observe:
+
+```text
+dev-projet-task-service-1 Up 3002/tcp
+dev-projet-task-service-2 Up 3002/tcp
+dev-projet-task-service-3 Up 3002/tcp
+```
+
 **Manipulation 2** — Contourner cette erreur en modifiant `docker-compose.yml`, puis relancez :
 
 ```bash
@@ -149,6 +180,14 @@ Dans Prometheus sur http://localhost:9090/targets, on voit toujours une seule ta
 
 ```text
 task-service:3002
+```
+
+Observation apres scaling:
+
+```text
+scrapeUrl: http://task-service:3002/metrics
+labels: instance="task-service:3002", job="task-service"
+health: up
 ```
 
 Prometheus ne voit donc pas 3 targets distinctes. La configuration actuelle ne connait pas les noms ou adresses individuelles des replicas. Elle ne fait qu'interroger le nom DNS Compose du service.
