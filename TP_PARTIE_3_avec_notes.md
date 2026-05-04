@@ -289,11 +289,59 @@ Comme à l'étape 5, créez les fichiers de configuration dans des dossiers déd
 > Pour chaque service, posez-vous ces questions : 
 >
 > 1. Que sert-il ? De la logique métier ou des fichiers statiques ?
+
+```text
+api-gateway sert de point d’entrée HTTP. Il exécute du code applicatif : vérification JWT, routage et proxy vers user-service, task-service et notification-service. 
+frontend sert des fichiers statiques React compilés via nginx : HTML, CSS et JavaScript. Il ne contient pas de logique métier côté serveur.
+```
+
 > 2. Y a-t-il un état partagé entre les requêtes qui pourrait poser problème avec plusieurs instances ?
+
+```text
+Non, api-gateway est stateless : il vérifie les tokens JWT et relaie les requêtes, mais ne stocke pas d’état local important entre deux requêtes.
+Et le frontend il sert uniquement des fichiers statiques. Plusieurs replicas peuvent servir les mêmes fichiers sans conflit.
+```
+
 > 3. Quel est l'impact d'une indisponibilité momentanée de l'un d'entre eux en environnement staging ?
+
+```text
+Si api-gateway est indisponible, l’application devient pratiquement inutilisable côté client, car toutes les routes /api passent par lui.
+
+Si frontend est indisponible, l’interface web n’est plus accessible, mais les services backend peuvent encore fonctionner et être testés directement.
+
+En staging, l’impact est gênant mais pas critique comme en production.
+```
+
 > 4. Exécute-t-il du code à chaque requête, ou se contente-t-il de servir des fichiers précompilés ? Qu'est-ce que cela implique sur les ressources nécessaires (requests et limits) ?
->
+
+```text
+api-gateway exécute du code à chaque requête : middleware d’authentification, logs, métriques et proxy HTTP. Il a donc besoin de ressources un peu plus élevées :
+
+  requests:
+    memory: 128Mi
+    cpu: 100m
+  limits:
+    memory: 256Mi
+    cpu: 300m
+
+frontend sert des fichiers précompilés avec nginx. Il consomme moins de CPU et de mémoire, donc des ressources plus faibles suffisent :
+
+  requests:
+    memory: 32Mi
+    cpu: 25m
+  limits:
+    memory: 96Mi
+    cpu: 100m
+```
+
 > Choisissez le nombre de replicas et dimensionnez les ressources pour chaque service. Justifiez vos choix dans `REPORT.md`.
+
+```text
+api-gateway: 2 replicas
+frontend: 2 replicas
+
+Les deux sont stateless, donc faciles à répliquer. api-gateway est critique car toutes les requêtes API passent par lui. Le frontend est aussi répliqué pour éviter qu’un seul pod rende l’interface indisponible.
+```
 
 Appliquez et vérifiez que les Pods passent en `1/1 Running`.
 
