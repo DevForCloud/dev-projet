@@ -25,6 +25,10 @@ Compléter le fichier `k8s/kind-config.yaml` avant de créer le cluster :
 kind create cluster --name taskflow --config k8s/kind-config.yaml
 ```
 
+```text
+Note: J'ai du ajouté `kind: Cluster` dans le kind-config.yaml
+```
+
 ⚠️ Cette commande peut mettre un certain temps avant d'être complétée.
 
 Vérifiez que le cluster est prêt :
@@ -34,6 +38,14 @@ kubectl get nodes
 ```
 
 Vous devez voir 3 nœuds en état `Ready`.
+
+Note:
+```bash
+NAME                     STATUS     ROLES           AGE   VERSION
+taskflow-control-plane   NotReady   control-plane   19s   v1.32.2
+taskflow-worker          NotReady   <none>          9s    v1.32.2
+taskflow-worker2         NotReady   <none>          9s    v1.32.2
+```
 
 Créez le namespace staging :
 
@@ -76,10 +88,36 @@ kubectl apply -f k8s/base/user-service/
 ```
 
 > Observez le Terminal A. Les pods passent-ils en 1/1 Running ?
+
+Non il reste en 
+```bash
+  0/1 ErrImagePull
+  0/1 ImagePullBackOff
+```
 > 
 > Si vous voyez `ImagePullBackOff` ou `ErrImagePull`, diagnostiquez avant de continuer, lisez attentivement la section Events. 
 > 1. Que vous dit Kubernetes ? 
+
+Dans les Events, Kubernetes dit il essaie de récupérer l’image `dev-projet-user-service:latest` mais il la cherche sur Docker Hub `docker.io/library/dev-projet-user-service:latest`
+Et il échoue avec :
+
+  pull access denied, repository does not exist or may require authorization 
+  insufficient_scope: authorization failed
+
+Donc Kubernetes ne trouve pas l’image dans son environnement
+
 > 2. Qu'est-ce qui manque dans votre configuration actuelle par rapport à ce que vous avez déployé jusqu'ici ?
+ Il manque l’accès à l’image applicative.
+
+Jusqu’ici, avec Docker Compose, l’image `dev-projet-user-service:latest` existe localement, mais le cluster kind est un cluster Kubernetes séparé. Il ne voit pas automatiquement les images locales.
+
+Il faut donc faire publier l’image sur Docker Hub et mettre ce nom dans le manifest :
+
+image: lordtibu/taskflow-user-service:v1.0.0
+
+Ou on peut charger l’image locale dans le cluster kind :
+
+    kind load docker-image dev-projet-user-service:latest --name taskflow
 > 
 > Corrigez le problème, et vérifiez que les pods passent bien en Running avant de passer à l'étape suivante.
 

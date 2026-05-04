@@ -1,8 +1,8 @@
 apiVersion: apps/v1
-kind: # [...]
+kind: Deployment
 metadata:
   name: user-service
-  namespace: # [...]
+  namespace: staging
 spec:
   replicas: 2
   selector:
@@ -13,10 +13,28 @@ spec:
       labels:
         app: user-service
     spec:
-      # [...]
       containers:
         - name: user-service
-          # [...]
+          image: dev-projet-user-service:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: user-service-cm
+          ports:
+            - name: http
+              containerPort: 3001
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 10
           resources:
             requests:
               memory: "128Mi"

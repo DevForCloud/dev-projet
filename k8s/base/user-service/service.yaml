@@ -1,10 +1,12 @@
 apiVersion: v1
-kind: # [...]
+kind: Service
 metadata:
   name: user-service
-  namespace: # [...]
+  namespace: staging
 spec:
   selector:
     app: user-service
   ports:
-    # [...]
+    - name: http
+      port: 3001
+      targetPort: 3001
