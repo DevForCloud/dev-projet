@@ -36,8 +36,8 @@ services:
 
   task-service:
     build: ./task-service
-    ports:
-      - "3002:3002"
+    # ports supprimés pour permettre le scaling (docker compose up --scale task-service=3)
+    # le port 3002 reste accessible sur le réseau Docker interne
     env_file:
       .env
     depends_on:
