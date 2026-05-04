@@ -141,8 +141,29 @@ kubectl apply -f k8s/base/postgres/
 ```
 
 > Jetez un œil au **Terminal A** 
-> Combien de pods sont en `Running` ? 
+> Combien de pods sont en `Running` ?  
+Il y a 3 pods en `Running`
+
+```bash 
+  postgres-0                      1/1 Running
+  user-service-77768dcf8b-2fjfw   1/1 Running
+  user-service-77768dcf8b-hlz6g   1/1 Running
+```
 > Sur quels nœuds sont-ils schedulés ?
+
+Ils sont schedulés sur ces noeuds: 
+```bash
+  postgres-0                      taskflow-worker2
+  user-service-77768dcf8b-2fjfw   taskflow-worker
+  user-service-77768dcf8b-hlz6g   taskflow-worker2
+```
+
+```text 
+1 pod PostgreSQL et 2 pods user-service.
+PostgreSQL est schedulé sur taskflow-worker2. Les deux
+replicas du user-service sont répartis entre taskflow-
+worker et taskflow-worker2.
+```
 
 ---
 
@@ -153,8 +174,36 @@ kubectl apply -f k8s/base/postgres/
 > Répondez dans votre `REPORT.md` :
 >
 > 1. Quelle propriété du StatefulSet garantit que chaque Pod conserve toujours le même volume de stockage, même après un redémarrage ou un rescheduling sur un autre nœud ?
+
+```text
+La propriété importante est le volumeClaimTemplates du StatefulSet, associé à l’identité stable du pod.
+
+Dans notre cas, le pod PostgreSQL s’appelle toujours postgres-0 et son volume reste associé à ce pod via le PVC créé par le StatefulSet. Même si le pod est supprimé puis recréé, Kubernetes rattache le même volume persistant au même ordinal postgres-0.
+```
+
 > 2. Pourquoi un Deployment serait-il inadapté pour PostgreSQL, même si techniquement on peut lui attacher un volume ?
+
+```text
+Pour une base de données, ce comportement pose problème :
+
+  - PostgreSQL a besoin d’un stockage persistant stable
+  - il ne faut pas que plusieurs pods écrivent n’importe comment dans le même volume
+  - l’ordre de création/suppression peut être important
+  - l’identité réseau et le volume doivent rester prévisibles
+```
+
 > 3. Parmi les services restants de la stack TaskFlow (Redis, notification-service, `api-gateway`, frontend), lequel mériterait potentiellement un StatefulSet plutôt qu'un Deployment en production ? Justifiez votre choix.
+
+```text
+Redis est utilisé comme bus Pub/Sub et une perte de données au redémarrage est acceptable, donc un Deployment suffit. Mais en production, si Redis servait aussi à stocker des données importantes, gérer des files persistantes, du cache critique ou une configuration avec réplication, il aurait besoin :
+  - d’une identité stable par instance
+  - d’un stockage persistant éventuel
+  - d’un démarrage ordonné
+  - d’une configuration plus contrôlée entre replicas
+
+notification-service, api-gateway et frontend restent plutôt stateless : ils peuvent être répliqués avec des Deployments. Le frontend sert des fichiers statiques, l’api-gateway route les requêtes, et le notification-service peut être relancé sans volume persistant propre dans cette architecture.
+
+```
 
 ---
 
