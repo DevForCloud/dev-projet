@@ -1,30 +1,32 @@
-# TP — Stress test avec k6 — notes
+# TP — Stress test avec k6
 
 ## Objectif
 
-Observer le comportement de TaskFlow sous charge et identifier le goulot d'etranglement avec k6 pour la latence end-to-end et Grafana pour les metriques par service.
+Observer le comportement de TaskFlow sous charge et identifier le goulot d'étranglement en combinant les résultats k6 (latence end-to-end) et Grafana (trafic par service en temps réel).
 
-## Prerequis corriges
+---
 
-- Application: `docker compose up --build`
-- Infrastructure: `docker compose -f docker-compose.infra.yml up`
-- Stack complete: `docker compose -f docker-compose.yml -f docker-compose.infra.yml up --build`
-- Grafana: http://localhost:3100 dans ce projet, car `docker-compose.infra.yml` publie Grafana avec `3100:3000`.
-- API Gateway: http://localhost:3000
-- Script leger: `scripts/load-test-light.js`
-- Script realiste: `scripts/load-test-realistic.js`
+## Prérequis
 
-## Etape 1 — Test leger
+- TaskFlow lancé avec sa stack d'observabilité depuis la commande `npm run dev:infra`
+- Grafana accessible sur http://localhost:3000
+- Le panel **Request Rate per Service** — doit montrer le trafic reçu par chaque service en req/s
+- k6 installé — [https://k6.io/docs/get-started/installation/](https://k6.io/docs/get-started/installation/)
+- Un token JWT valide (se connecter via le frontend et récupérer le token dans le localStorage ou les DevTools)
+- Un compte utilisateur valide dans l'application (email + mot de passe)
 
-### Commande
+> **Note** : le panel *Latency p50/p95/p99* mesure le temps de traitement **interne** au service (une fois la connexion TCP acceptée par Node.js). Sous forte charge, les connexions refusées au niveau OS ne sont jamais chronométrées. Utilisez le **résumé terminal de k6** comme source de vérité pour la latence end-to-end.
+
+---
+
+## Étape 1 — Lancer un premier test léger
+
+Regardez le ficher `scripts/load-test-light.js`, lancer le test de charge légère.
 
 ```bash
-k6 run -e TOKEN=<votre_token> scripts/load-test-light.js
+k6 run -e TOKEN=<votre_token> scripts/load-test.js
 ```
-
-Le script leger envoie une requete `GET /api/tasks` par iteration via l'API Gateway. Le `BASE_URL` par defaut a ete aligne sur `http://localhost:3000`.
-
-### Question 1
+### Question 1 — Quelle est la latence p95 affichée par k6 pendant ce test léger ? Est-elle dans les seuils acceptables (< 200ms) ?
 
 La latence p95 doit etre lue dans le resume terminal k6, ligne `http_req_duration`.
 
@@ -36,7 +38,7 @@ A completer apres execution k6.
 
 Interpretation attendue: si `p(95) < 200ms`, le test leger reste dans le seuil acceptable demande.
 
-### Question 2
+### Question 2 - Le taux `http_req_failed` est-il à 0 % ? Si non, quel code d'erreur observez-vous ?
 
 Le taux `http_req_failed` doit etre lu dans le resume terminal k6.
 
@@ -48,33 +50,18 @@ A completer apres execution k6.
 
 Interpretation attendue: `0.00%` signifie qu'aucune requete HTTP n'a echoue. Si le taux n'est pas nul, regarder les checks et les statuts HTTP retournes.
 
-## Etape 2 — Montee en charge progressive
+## Étape 2 — Monter la charge progressivement
 
-### Commandes
-
-Scenario par defaut:
+Lancez maintenant le script réaliste `scripts/load-test-realistic.js` qui simule un vrai parcours utilisateur sur tous les services :
 
 ```bash
 k6 run -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
 ```
 
-Scenario plus fort pour identifier le seuil de rupture:
+Relancez et observez **Grafana** + **terminal k6** en continu.
 
-```bash
-HIGH_VUS=100 k6 run -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
-HIGH_VUS=200 k6 run -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
-```
 
-Le script realiste envoie, a chaque iteration complete:
-
-- 1 requete `POST /api/users/login`
-- 1 requete `GET /api/tasks`
-- 1 requete `POST /api/tasks`
-- 1 requete `GET /api/notifications`
-
-Toutes ces requetes passent par `api-gateway`.
-
-### Question 3
+### Question 3 - Dans le résumé k6, observez les lignes `checks_failed` et `http_req_duration`. À partir de quel stade (combien de VUs) le check `tasks response < 500ms` commence-t-il à échouer massivement ? Quelle est la p95 finale ?
 
 Dans le resume k6, il faut regarder:
 
@@ -90,7 +77,7 @@ A completer apres execution k6.
 
 Interpretation attendue: le stade a reporter est le premier niveau de VUs ou le check `tasks response < 500ms` commence a echouer massivement. La p95 finale est la valeur `p(95)` de `http_req_duration` dans le resume terminal k6, pas la latence Grafana.
 
-### Question 4
+### Question 4 - Dans Grafana, observez le panel **Request Rate per Service** au pic de charge. L'`api-gateway` reçoit environ 2× plus de trafic que le `task-service` et 4× plus que le `user-service`. Expliquez pourquoi en vous appuyant sur le script de test : combien de requêtes par service sont émises à chaque itération ?
 
 Au pic de charge, `api-gateway` recoit plus de trafic car il est le point d'entree unique. Chaque iteration du scenario realiste fait 4 appels HTTP vers `api-gateway`.
 
@@ -103,7 +90,7 @@ Repartition par service applicatif:
 
 C'est pour cela que `api-gateway` recoit environ 2 fois plus de trafic que `task-service`, et environ 4 fois plus que `user-service`.
 
-### Question 5
+### Question 5 - Pourquoi le `task-service` est-il plus impacté que le `user-service` ou le `notification-service` sous forte charge ?
 
 Le `task-service` est plus impacte parce qu'il recoit deux appels par iteration et parce que son endpoint de creation fait plus de travail qu'une simple lecture:
 
@@ -115,17 +102,15 @@ Le `task-service` est plus impacte parce qu'il recoit deux appels par iteration 
 
 Le `user-service` ne gere qu'un login par iteration, et le `notification-service` ne fait qu'une lecture en memoire dans cette implementation. Le `task-service` combine donc plus de trafic et plus d'I/O.
 
-## Etape 3 — Limites de `docker scale`
+## Étape 3 — Tester les limites de `docker scale`
 
-### Manipulation 1
-
-Commande:
+**Manipulation 1** — Tentez de scaler le `task-service` à 3 replicas :
 
 ```bash
 docker compose up --scale task-service=3
 ```
 
-### Question 6
+### Question 6 - Que se passe-t-il ? Quelle erreur obtenez-vous et pourquoi ? Identifiez dans le `docker-compose.yml` la ligne responsable.
 
 Avec la configuration initiale, Docker Compose echoue car `task-service` publie un port hote fixe:
 
@@ -144,25 +129,15 @@ Bind for 0.0.0.0:3002 failed: port is already allocated
 
 Ligne responsable: `docker-compose.yml`, service `task-service`, section `ports`.
 
-### Manipulation 2
-
-Le contournement consiste a ne plus publier `task-service` directement sur l'hote. Le service reste accessible dans le reseau Docker par `task-service:3002`, ce qui suffit pour `api-gateway` et Prometheus.
-
-Configuration appliquee:
-
-```yaml
-task-service:
-  expose:
-    - "3002"
-```
-
-Commande:
+**Manipulation 2** — Contourner cette erreur en modifiant `docker-compose.yml`, puis relancez :
 
 ```bash
 docker compose up --scale task-service=3
 ```
 
-### Question 7
+Relancez ensuite le test k6 et observez Grafana.
+
+### Question 7 - Le scaling a-t-il amélioré les métriques ? Dans Grafana, les 3 replicas reçoivent-ils du trafic ? Mêmes questions depuis l'interface Prometheus sur http://localhost:9090/targets. Combien de targets `task-service` voyez-vous malgré les 3 replicas ? Expliquez pourquoi Prometheus ne peut pas surveiller les 3 instances individuellement avec cette configuration ?
 
 Le scaling peut ameliorer partiellement la capacite du `task-service`, mais il ne rend pas l'architecture propre pour autant.
 
@@ -178,7 +153,7 @@ Prometheus ne voit donc pas 3 targets distinctes. La configuration actuelle ne c
 
 Pour monitorer chaque replica individuellement, il faudrait une decouverte de services qui expose chaque instance comme target separee, ou une configuration generee dynamiquement.
 
-### Question 8
+### Question 8 - Pourquoi `docker scale` ne suffit pas pour un scaling propre en production ? Qu'est-ce qu'un orchestrateur comme Kubernetes apporterait pour résoudre les problèmes que vous avez rencontrés ?
 
 `docker scale` ne suffit pas pour un scaling propre en production parce qu'il ne fournit pas tout ce qui est necessaire autour du simple demarrage de plusieurs conteneurs:
 
@@ -190,3 +165,55 @@ Pour monitorer chaque replica individuellement, il faudrait une decouverte de se
 - pas de configuration native des probes de readiness/liveness comparable a Kubernetes
 
 Kubernetes apporte des `Deployments` pour gerer les replicas, des `Services` pour exposer un point d'entree stable avec load balancing, des probes, du rolling update, du service discovery, et une integration beaucoup plus propre avec Prometheus via des mecanismes de decouverte.
+
+## Étape 4 — Limites de l'instrumentation
+
+### Question 9 - Le panel *Error Rate 5xx* affiche "No data" alors que k6 signale des erreurs. Le serveur retourne-t-il des erreurs HTTP ? Peut-on utiliser ce panel pour détecter une dégradation de performance ?
+
+Le panel `Error Rate 5xx` peut afficher `No data` alors que k6 signale des erreurs, car k6 ne compte pas seulement les reponses HTTP 5xx.
+
+k6 peut signaler des erreurs pour:
+
+- connexion refusee
+- timeout
+- reset TCP
+- requete interrompue avant reception d'une reponse HTTP
+- echec d'un check applicatif, par exemple `tasks response < 500ms`
+
+Dans ces cas, le serveur n'a pas forcement retourne de reponse HTTP 500. Si la requete n'atteint pas Express, la metrique applicative `http_requests_total{status=~"5.."}` n'est jamais incrementee.
+
+Conclusion: ce panel est utile pour detecter les erreurs HTTP 5xx retournees par les services, mais il ne suffit pas pour detecter une degradation de performance ou des erreurs reseau/end-to-end sous forte charge.
+
+Pour detecter une degradation de performance, il faut aussi regarder:
+
+- le resume k6, surtout `http_req_failed`, `http_req_duration` et les checks
+- les erreurs de connexion ou timeouts dans k6
+- les logs applicatifs et Docker
+- les metriques systeme ou reverse-proxy si disponibles
+
+### Question 10 - Le panel *Latency p50/p95/p99* reste flat pendant tout le test, alors que k6 mesure une p95 qui ne correcpond pas à ce que montre Grafana. D'où vient cet écart ? Qu'est-ce que ce panel mesure réellement, et qu'est-ce qu'il ne mesure pas ? Que faudrait-il faire pour rectifier ça ?
+
+Le panel `Latency p50/p95/p99` de Grafana reste flat parce qu'il mesure la latence interne observee par les services Node.js, via `http_request_duration_ms`.
+
+Cette metrique commence quand Express traite la requete et se termine quand la reponse Express est finalisee. Elle ne mesure pas toute la latence end-to-end vue par k6.
+
+Elle ne mesure pas:
+
+- le temps d'attente avant acceptation de la connexion
+- la saturation du socket ou de la file d'attente OS
+- les connexions refusees
+- les timeouts avant que la requete atteigne Node.js
+- la latence reseau cote client
+- les echecs ou delais au niveau Docker / host
+
+k6 mesure la latence end-to-end depuis le client de test. C'est donc la source de verite pour l'experience utilisateur pendant le stress test.
+
+Pour rectifier ce decalage, il faudrait ajouter une instrumentation au point d'entree externe:
+
+- mesurer la latence cote API Gateway avec une metrique dediee end-to-end
+- ajouter un reverse-proxy comme Nginx/Traefik/Envoy et exporter ses metriques
+- collecter des metriques systeme host/container
+- ajouter des blackbox probes ou synthetic checks depuis l'exterieur
+- conserver k6 comme mesure de reference pour les tests de charge
+
+Grafana montre correctement la latence interne des services qui ont effectivement traite une requete. k6 montre la latence et les echecs ressentis par le client.
