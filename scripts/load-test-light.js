@@ -2,8 +2,8 @@
 // Documentation: https://k6.io/docs/
 //
 // Usage:
-//   k6 run scripts/load-test.js -- Play the scenario with options defined in the script
-//   k6 run --vus 50 --duration 60s scripts/load-test.js -- Override options from the command line
+//   k6 run -e TOKEN=<token> scripts/load-test-light.js
+//   k6 run --vus 50 --duration 60s -e TOKEN=<token> scripts/load-test-light.js
 //
 // During execution, watch Grafana and see the metrics rise in real time.
 
@@ -16,7 +16,7 @@ export const options = {
   duration: '30s', // pendant 30 secondes
 };
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:3004';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 
 // Test token — replace with a real token after login
 let token = __ENV.TOKEN || '';
