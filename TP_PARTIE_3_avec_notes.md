@@ -438,9 +438,44 @@ curl http://localhost/api/health
 Ouvrez http://localhost dans votre navigateur — vous devez voir l'interface TaskFlow.
 
 > 1. Essayez de créer un compte sur l'interface. Est-ce que ça fonctionne ?
+
+```text
+Oui, la création de compte fonctionne depuis l’Ingress. La requête passe par la chaîne :
+
+  Ingress -> api-gateway -> user-service -> PostgreSQL
+
+Le user-service répond bien avec un utilisateur créé en base.
+```
+
 > 2. Si vous obtenez une erreur, remontez la chaîne de logs (Ingress → api-gateway → user-service ...) jusqu'au service concerné. Une fois la cause identifiée, vous aurez besoin d'inspecter directement le contenu de la base. Comment accéder à PostgreSQL depuis votre machine ? 
+
+```text
+Si on devait accéder à PostgreSQL depuis la machine, on utiliserait un port-forward :
+
+  kubectl port-forward -n staging svc/postgres 5432:5432
+
+Puis, dans un autre terminal :
+
+  psql postgresql://taskflow:taskflow@localhost:5432/taskflow
+
+On peut aussi entrer directement dans le pod :
+
+  kubectl exec -it -n staging postgres-0 -- psql -U taskflow -d taskflow
+```
+
 > 3. Comparez votre configuration Kubernetes avec docker-compose.yaml. Qu'est-ce qui est fait dans Compose et qui n'existe pas encore dans vos manifests ?
->
+
+```text
+Dans docker-compose.yml, PostgreSQL monte directement le script d’initialisation :
+
+  ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+Dans Kubernetes, ce montage n’existait pas au départ. Il a fallu le reproduire avec une ConfigMap montée dans /docker-entrypoint-initdb.d.
+
+Aussi Docker Compose expose directement des ports sur lamachine hôte, alors que Kubernetes utilise des services internes et un Ingress pour exposer l’application 
+Compose utilise aussi env_file: .env, alors que Kubernetes sépare la configuration entre ConfigMap et Secret.
+```
+
 > Rectifiez le problème et commentez votre investigation dans `REPORT.md`
 
 ---
@@ -452,8 +487,66 @@ Ouvrez http://localhost dans votre navigateur — vous devez voir l'interface Ta
 > Répondez dans votre `REPORT.md` :
 >
 > 1. Vous avez utilisé une commande pour vous connecter à PostgreSQL depuis votre machine. Pourquoi n'avez-vous pas pu vous connecter directement sur `localhost:5432` sans celle-ci ?
+
+```text
+Parce que PostgreSQL est exposé avec un Service Kubernetes interne de type ClusterIP.
+
+Un ClusterIP rend le service accessible à l’intérieur du cluster, par exemple depuis les autres pods avec :
+
+  postgres:5432
+
+Mais il ne publie pas le port 5432 sur la machine hôte. Donc depuis ta machine, localhost:5432 ne pointe pas vers PostgreSQL Kubernetes.
+
+Pour y accéder depuis la machine, il faut créer un tunnel avec :
+
+  kubectl port-forward -n staging svc/postgres 5432:5432
+
+Cette commande relie temporairement ton localhost:5432 au service PostgreSQL dans le cluster.
+```
 > 2. Quel composant du cluster fait réellement le routage HTTP que vous avez décrit dans votre `Ingress` ? Comment est-il apparu dans le cluster ?
+
+```text
+Le routage HTTP est fait par le contrôleur ingress-nginx, plus précisément par le pod :
+    ingress-nginx-controller
+
+L’objet Ingress ne route pas lui-même le trafic. Il décrit seulement les règles :
+
+  /api -> api-gateway
+  / -> frontend
+
+Le composant qui lit ces règles et configure le routage réel est l’Ingress Controller.
+
+Il est apparu dans le cluster après l’application du manifest officiel kind :
+
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+
+Ensuite, on a vérifié qu’il tournait bien sur :
+
+  taskflow-control-plane
+```
+
 > 3. Dans votre cluster, qui joue le rôle de load balancer entre les replicas de `task-service` ? Est-ce l'Ingress, le Service, ou autre chose ? Qu'est-ce que cela implique sur le rôle réel de l'Ingress dans cette architecture ?
+
+```text
+L’Ingress route le trafic HTTP externe vers api-gateway. Ensuite, l’api-gateway appelle :
+
+  http://task-service:3002
+
+Ce nom DNS pointe vers le Service Kubernetes task-service. Ce Service sélectionne les pods avec :
+
+  selector:
+    app: task-service
+
+Puis Kubernetes répartit le trafic vers les endpoints disponibles,
+c’est-à-dire les replicas du task-service.
+
+Donc dans cette architecture :
+
+  Ingress -> api-gateway Service -> api-gateway Pods -> task-service
+  Service -> task-service Pods
+
+L’Ingress sert surtout de point d’entrée HTTP depuis l’extérieur du cluster. Le load balancing interne entre replicas est assuré par les Services Kubernetes.
+```
 
 ---
 
@@ -470,6 +563,31 @@ kubectl delete pod -n staging -l app=task-service
 Observez le Terminal A. 
 
 > Décrivez dans votre `REPORT.md` ce que vous voyez et pourquoi Kubernetes recrée les Pods.
+
+```text
+Avant la suppression, le Deployment task-service avait 2 replicas disponibles :
+
+  task-service-59b6b6774c-8p4x8   1/1 Running
+  task-service-59b6b6774c-dm8cq   1/1 Running
+
+Après la commande :
+
+  kubectl delete pod -n staging -l app=task-service
+
+les deux pods ont été supprimés. Kubernetes a immédiatement recréé deux nouveaux pods :
+
+  task-service-59b6b6774c-hmb8x   0/1 Running
+  task-service-59b6b6774c-js52x   0/1 Running
+
+Quelques secondes plus tard, ils sont passés en Ready :
+
+  task-service-59b6b6774c-hmb8x   1/1 Running
+  task-service-59b6b6774c-js52x   1/1 Running
+
+Kubernetes recrée les pods parce que task-service est géré par un Deployment avec replicas: 2. Le Deployment délègue à un ReplicaSet la responsabilité de maintenir en permanence deux pods correspondant au selector app=task-service.
+
+Quand on supprime manuellement les pods, l’état réel du cluster ne correspond plus à l’état désiré. Le contrôleur Kubernetes détecte qu’il manque deux replicas et crée automatiquement de nouveaux pods pour revenir à l’état attendu. C’est le mécanisme de self-healing.
+```
 
 ### Scénario 2 — Readiness probe
 
@@ -491,13 +609,55 @@ kubectl apply -f k8s/base/ --recursive
 
 > Observez la colonne READY du Terminal A. 
 > 1. Dans quel état sont les pods du `task-service` ?
+
+```text
+Les pods du task-service sont en Running, mais pas Ready.
+
+Le conteneur tourne, mais Kubernetes ne le considère pas prêt à recevoir du trafic, car la readiness probe appelle :
+
+  /does-not-exist
+
+Cette route n’existe pas, donc elle retourne une erreur.
+```
+
 > 2. Essayez de vous connecter, puis de créer une tâche. Quels services répondent, lesquels ne répondent pas ? 
+
+Le frontend répond encore, car nginx sert les fichiers statiques (il a fallut installé a nouveau le controller Ingress): 
+
+L’api-gateway répond aussi, par exemple :
+
+curl http://localhost/api/health
+
+Le user-service répond aussi : on peut créer un compte ou te connecter, car il dépend surtout de PostgreSQL.
+
+En revanche, la création de tâche ne fonctionne pas. Le task-service n’est pas considéré comme Ready, donc il est retiré des endpoints du Service Kubernetes task-service.
+
+Résultat attendu côté application :
+
+frontend: répond
+api-gateway: répond
+user-service: répond
+postgres: répond
+task-service: ne reçoit pas de trafic via le Service
+création de tâche: échoue
 
 Remettez le path à `/health`, réappliquez et observez les pods repasser en 1/1.
 
 > 3. Réessayez de créer une tâche.
->
+
+```text
+Après ça, la création de tâche refonctionne, car le Service Kubernetes task-service retrouve des endpoints prêts.
+```
+
 > Documentez dans votre `REPORT.md` puis expliquez la différence entre une readiness probe et une liveness probe. Que se serait-il passé si vous aviez cassé la liveness probe à la place ? 
+
+```text
+La readinessProbe indique si un pod est prêt à recevoir du trafic. Si elle échoue, le pod continue de tourner, mais Kubernetes le retire des endpoints du Service. Il n’est donc plus utilisé pour répondre aux requêtes.
+
+La livenessProbe indique si le conteneur est encore vivant. Si elle échoue, Kubernetes considère que le conteneur est bloqué ou cassé, puis le redémarre.
+
+Si on avait cassé la livenessProbe au lieu de la readinessProbe, les pods du task-service auraient été redémarrés en boucle. On aurait probablement vu des RESTARTS augmenter, voire un état instable de type redémarrages répétés.
+```
 
 
 ### Scénario 3 — Rolling update
