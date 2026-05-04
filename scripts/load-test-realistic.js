@@ -5,7 +5,7 @@
 // Usage:
 //   k6 run scripts/load-test-realistic.js
 //   k6 run --vus 50 --duration 60s scripts/load-test-realistic.js
-//   HIGH_VUS=100 k6 run -e EMAIL=test@example.com -e PASSWORD=password123 scripts/load-test-realistic.js
+//   k6 run -e HIGH_VUS=100 -e EMAIL=test@example.com -e PASSWORD=password123 scripts/load-test-realistic.js
 //
 // Credentials can be overridden via env vars:
 //   k6 run -e EMAIL=test@example.com -e PASSWORD=password123 scripts/load-test-realistic.js

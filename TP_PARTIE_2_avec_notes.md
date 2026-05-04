@@ -9,7 +9,7 @@ Observer le comportement de TaskFlow sous charge et identifier le goulot d'étra
 ## Prérequis
 
 - TaskFlow lancé avec sa stack d'observabilité depuis la commande `npm run dev:infra`
-- Grafana accessible sur http://localhost:3000
+- Grafana accessible sur http://localhost:3100 dans ce projet (`3100:3000` dans `docker-compose.infra.yml`)
 - Le panel **Request Rate per Service** — doit montrer le trafic reçu par chaque service en req/s
 - k6 installé — [https://k6.io/docs/get-started/installation/](https://k6.io/docs/get-started/installation/)
 - Un token JWT valide (se connecter via le frontend et récupérer le token dans le localStorage ou les DevTools)
@@ -24,7 +24,7 @@ Observer le comportement de TaskFlow sous charge et identifier le goulot d'étra
 Regardez le ficher `scripts/load-test-light.js`, lancer le test de charge légère.
 
 ```bash
-k6 run -e TOKEN=<votre_token> scripts/load-test.js
+k6 run -e TOKEN=<votre_token> scripts/load-test-light.js
 ```
 ### Question 1 — Quelle est la latence p95 affichée par k6 pendant ce test léger ? Est-elle dans les seuils acceptables (< 200ms) ?
 
@@ -56,6 +56,8 @@ Lancez maintenant le script réaliste `scripts/load-test-realistic.js` qui simul
 
 ```bash
 k6 run -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
+k6 run -e HIGH_VUS=100 -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
+k6 run -e HIGH_VUS=200 -e EMAIL=<email> -e PASSWORD=<password> scripts/load-test-realistic.js
 ```
 
 Relancez et observez **Grafana** + **terminal k6** en continu.
