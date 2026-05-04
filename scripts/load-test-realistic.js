@@ -5,7 +5,7 @@
 // Usage:
 //   k6 run scripts/load-test-realistic.js
 //   k6 run --vus 50 --duration 60s scripts/load-test-realistic.js
-//   k6 run --vus 200 --duration 60s scripts/load-test-realistic.js
+//   HIGH_VUS=100 k6 run -e EMAIL=test@example.com -e PASSWORD=password123 scripts/load-test-realistic.js
 //
 // Credentials can be overridden via env vars:
 //   k6 run -e EMAIL=test@example.com -e PASSWORD=password123 scripts/load-test-realistic.js
@@ -13,17 +13,20 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+const LOW_VUS = Number(__ENV.LOW_VUS || 10);
+const HIGH_VUS = Number(__ENV.HIGH_VUS || 50);
+
 export const options = {
   stages: [
-    { duration: '30s', target: 10 },   // ramp up to 10 users
-    { duration: '1m',  target: 10 },   // hold at 10 users
-    { duration: '30s', target: 50 },  // spike to 50 users
-    { duration: '1m',  target: 50 },  // hold the spike
+    { duration: '30s', target: LOW_VUS },
+    { duration: '1m',  target: LOW_VUS },
+    { duration: '30s', target: HIGH_VUS },
+    { duration: '1m',  target: HIGH_VUS },
     { duration: '30s', target: 0 },    // ramp down
   ],
 };
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:3004';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 const EMAIL = __ENV.EMAIL || '';
 const PASSWORD = __ENV.PASSWORD || '';
 
