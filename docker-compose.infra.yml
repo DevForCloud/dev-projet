@@ -8,7 +8,7 @@ services:
     expose:
       - "4317"
     volumes:
-      - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml
+      - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml:ro,Z
       - tempo_data:/var/tempo
 
   otel-collector:
@@ -19,7 +19,7 @@ services:
       - "4318:4318"
       - "8888:8888"
     volumes:
-      - ./infra/otel/config.yml:/etc/otel/config.yml
+      - ./infra/otel/config.yml:/etc/otel/config.yml:ro,Z
     depends_on:
       - tempo
 
@@ -31,7 +31,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
       - prometheus_data:/prometheus
     depends_on:
       - otel-collector
@@ -42,14 +42,14 @@ services:
     ports:
       - "3101:3100"
     volumes:
-      - ./infra/loki/loki-config.yml:/etc/loki/loki.yml
+      - ./infra/loki/loki-config.yml:/etc/loki/loki.yml:ro,Z
       - loki_data:/loki
 
   promtail:
     image: grafana/promtail:latest
     command: ["-config.file=/etc/promtail/promtail.yml"]
     volumes:
-      - ./infra/promtail/promtail-config.yml:/etc/promtail/promtail.yml
+      - ./infra/promtail/promtail-config.yml:/etc/promtail/promtail.yml:ro,Z
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
@@ -64,8 +64,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./infra/grafana/provisioning:/etc/grafana/provisioning
-      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro,Z
     depends_on:
       - prometheus
       - tempo
