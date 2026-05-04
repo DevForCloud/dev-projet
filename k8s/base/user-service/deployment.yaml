@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: user-service
-          image: dev-projet-user-service:latest
+          image: lordtibu/taskflow-user-service:v1.0.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

@@ -121,6 +121,10 @@ Ou on peut charger l’image locale dans le cluster kind :
 > 
 > Corrigez le problème, et vérifiez que les pods passent bien en Running avant de passer à l'étape suivante.
 
+```bash
+user-service-77768dcf8b-2fjfw   1/1     Running   0          2m30s   10.244.1.3   taskflow-worker    <none>           <none>
+user-service-77768dcf8b-hlz6g   1/1     Running   0          2m10s   10.244.2.3   taskflow-worker2   <none>           <none>
+```
 ---
 
 ### Étape 4 — Déployer PostgreSQL (StatefulSet)
