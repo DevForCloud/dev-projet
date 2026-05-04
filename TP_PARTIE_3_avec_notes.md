@@ -220,8 +220,39 @@ Créez les 3 fichiers dans `k8s/base/<nom-du-service>/` en vous basant sur le pa
 > Lisez le fichier `notification-service/src/subscriber.js`.
 >
 > 1. Comment ce service consomme-t-il les événements Redis ? 
+
+```text
+Le notification-service consomme les événements Redis avec le mécanisme Pub/Sub.
+
+Dans notification-service/src/subscriber.js, il crée un client Redis, se connecte à Redis, puis s’abonne à deux channels :
+
+    await subscriber.subscribe('task.created', ...)
+    await subscriber.subscribe('task.status_changed', ...)
+
+Quand le task-service publie un événement sur Redis, le notification-service reçoit le message, le parse en JSON, puis crée une notification en mémoire.
+
+```
+
 > 2. Qu'est-ce que cela implique sur le nombre de replicas à choisir ? Pour quel(s) service(s) ?
+
+```text
+Cela implique de garder le notification-service à 1 replica dans cette version.
+
+Le task-service, lui, peut avoir plusieurs replicas, car il est stateless : il écrit en base PostgreSQL et publie dans Redis.
+
+Donc le choix fait est :
+    task-service: 2 replicas
+    notification-service: 1 replica
+```
+
 > 3. Justifiez votre choix dans votre `REPORT.md`.
+
+```text
+Le notification-service stocke les notifications dans un tableau en mémoire. Si on lance plusieurs replicas, chaque pod aura son propre état local.
+
+En plus, avec Redis Pub/Sub, plusieurs abonnés peuvent recevoir les mêmes événements. Plusieurs replicas du notification-service risqueraient donc de créer des notifications dupliquées ou incohérentes selon le pod qui répond à la requête. 
+C’est pour cela que le notification-service reste à 1 replica. Le task-service peut être répliqué, car il ne garde pas d’état local important : les tâches sont stockées dans PostgreSQL et les événements sont publiés dans Redis.
+```
 
 Appliquez et vérifiez que les Pods passent en `1/1 Running`.
 

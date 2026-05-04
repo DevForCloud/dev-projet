@@ -1,10 +1,10 @@
 apiVersion: apps/v1
-kind: # [...]
+kind: Deployment
 metadata:
   name: redis
-  namespace: # [...]
+  namespace: staging
 spec:
-  replicas: # [...]
+  replicas: 1
   selector:
     matchLabels:
       app: redis
@@ -17,9 +17,22 @@ spec:
         - name: redis
           image: redis:7-alpine
           ports:
-            - containerPort: # [...]
+            - name: redis
+              containerPort: 6379
           readinessProbe:
-            # [...]
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 15
+            periodSeconds: 10
           resources:
             requests:
               memory: "32Mi"
