@@ -29,6 +29,7 @@ Architecture multi-services pour apprendre Kubernetes, l'observabilité et le CI
 - Docker et Docker Compose
 - Node.js et npm
 - Un fichier `.env` à la racine du projet
+- Pour Kubernetes, créer un fichier `k8s/base/postgres/secret.yaml` à partir du modèle `k8s/base/postgres/secret.example.yaml`
 
 Exemple minimal de `.env` :
 
@@ -59,6 +60,31 @@ API_GATEWAY_URL=http://api-gateway:3000
 API_GATEWAY_OTEL_SERVICE_NAME=api-gateway
 ```
 
+Exemple de Secret PostgreSQL pour Kubernetes :
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: staging
+type: Opaque
+stringData:
+  POSTGRES_USER: taskflow
+  POSTGRES_PASSWORD: taskflow
+  POSTGRES_DB: taskflow
+```
+
+Le StatefulSet PostgreSQL récupère ensuite ces valeurs avec `envFrom.secretRef`.
+
+Note prod :
+
+```text
+Le fichier secret.yaml ne doit pas être versionné avec de vrais secrets.
+Dans le dépôt, on garde plutôt secret.example.yaml comme modèle, et .gitignore
+ignore les fichiers secret.yaml.
+```
+
 ## Démarrage
 
 Installer les dépendances et générer les lockfiles :
@@ -84,6 +110,91 @@ Arrêter les conteneurs :
 ```bash
 docker compose down
 docker compose -f docker-compose.infra.yml down
+```
+
+### Démarrage Kubernetes
+
+Préparer le Secret PostgreSQL à partir du modèle :
+
+```bash
+cp k8s/base/postgres/secret.example.yaml k8s/base/postgres/secret.yaml
+```
+
+Créer le cluster kind :
+
+```bash
+kind create cluster --name taskflow --config k8s/kind-config.yaml
+```
+
+Vérifier les noeuds :
+
+```bash
+kubectl get nodes
+```
+
+Créer le namespace :
+
+```bash
+kubectl create namespace staging
+```
+
+Appliquer tous les manifests Kubernetes :
+
+```bash
+kubectl apply -f k8s/base/ --recursive
+```
+
+Installer le controller Ingress nginx pour kind :
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+```
+
+Attendre que le controller Ingress soit prêt :
+
+```bash
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=90s
+```
+
+Forcer le controller Ingress à tourner sur le control-plane :
+
+```bash
+kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
+  --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/nodeSelector/ingress-ready","value":"true"}]'
+```
+
+Attendre la fin du rollout :
+
+```bash
+kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx
+```
+
+Vérifier que tous les pods applicatifs tournent :
+
+```bash
+kubectl get pods -n staging -o wide
+```
+
+Tester l'API via l'Ingress :
+
+```bash
+curl http://localhost/api/health
+```
+
+L'interface web est ensuite disponible sur :
+
+```text
+http://localhost
+```
+
+Supprimer le cluster si besoin :
+
+```bash
+kind delete cluster --name taskflow
 ```
 
 ## URLs utiles
@@ -481,3 +592,439 @@ Pour corriger l'écart, il faudrait ajouter une mesure au point d'entrée extern
 - des probes synthétiques externes
 
 Grafana montre correctement la latence interne des requêtes traitées. k6 montre la latence réellement ressentie par le client.
+
+## Partie 3 — Kubernetes
+### Étape 3 — Déploiement du user-service
+
+#### Les pods passent-ils en `1/1 Running` ?
+
+Au début non. Le pod restait en erreur :
+
+```text
+0/1 ErrImagePull
+0/1 ImagePullBackOff
+```
+
+#### 1. Que vous dit Kubernetes ?
+
+Kubernetes indique qu'il essaie de récupérer l'image `dev-projet-user-service:latest`, mais il la cherche sur Docker Hub sous le nom :
+
+```text
+docker.io/library/dev-projet-user-service:latest
+```
+
+L'erreur indique que l'image n'existe pas ou n'est pas accessible :
+
+```text
+pull access denied, repository does not exist or may require authorization
+insufficient_scope: authorization failed
+```
+
+Cela signifie que le cluster kind ne peut pas récupérer l'image configurée dans le Deployment.
+
+#### 2. Qu'est-ce qui manque dans votre configuration actuelle par rapport à ce que vous avez déployé jusqu'ici ?
+
+Il manque une image accessible depuis le cluster Kubernetes.
+
+Avec Docker Compose, l'image locale peut être utilisée directement par Docker. Avec kind, les noeuds Kubernetes tournent dans des conteneurs séparés et ne voient pas automatiquement les images locales de la machine.
+
+La correction consiste soit à publier l'image sur Docker Hub :
+
+```yaml
+image: lordtibu/taskflow-user-service:v1.0.0
+```
+
+soit à charger l'image locale dans kind :
+
+```bash
+kind load docker-image dev-projet-user-service:latest --name taskflow
+```
+
+Après correction, les pods du `user-service` passent bien en `1/1 Running`.
+
+### Étape 4 — PostgreSQL avec StatefulSet
+
+#### Combien de pods sont en `Running` ?
+
+Après le déploiement de PostgreSQL, trois pods sont en `Running` :
+
+```text
+postgres-0
+user-service-...
+user-service-...
+```
+
+Il y a donc un pod PostgreSQL et deux replicas du `user-service`.
+
+#### Sur quels noeuds sont-ils schedulés ?
+
+Les pods sont répartis sur les workers du cluster. Par exemple :
+
+```text
+postgres-0                      taskflow-worker2
+user-service-...                taskflow-worker
+user-service-...                taskflow-worker2
+```
+
+### Deployment vs StatefulSet
+
+#### 1. Quelle propriété du StatefulSet garantit que chaque Pod conserve toujours le même volume de stockage ?
+
+La propriété importante est `volumeClaimTemplates`, associée à l'identité stable du pod.
+
+Dans notre cas, le pod PostgreSQL s'appelle toujours `postgres-0`. Le StatefulSet crée un PVC lié à ce pod. Même si le pod est supprimé puis recréé, Kubernetes rattache le même volume persistant au même ordinal `postgres-0`.
+
+#### 2. Pourquoi un Deployment serait-il inadapté pour PostgreSQL ?
+
+Un Deployment est conçu pour des applications stateless. Pour PostgreSQL, ce comportement est risqué car :
+
+- PostgreSQL a besoin d'un stockage persistant stable
+- plusieurs pods ne doivent pas écrire n'importe comment dans le même volume
+- l'identité réseau et le volume doivent rester prévisibles
+- l'ordre de création et de suppression peut être important
+
+Même si on peut techniquement attacher un volume à un Deployment, ce n'est pas le bon modèle pour une base de données.
+
+#### 3. Quel service restant mériterait potentiellement un StatefulSet en production ?
+
+Redis pourrait potentiellement mériter un StatefulSet en production.
+
+Dans ce TP, Redis sert de bus Pub/Sub et la perte des messages au redémarrage est acceptable, donc un Deployment suffit. En production, si Redis servait à stocker des données importantes, gérer des files persistantes, ou fonctionner en réplication, il aurait besoin d'une identité stable, d'un stockage persistant et d'une configuration plus contrôlée.
+
+`notification-service`, `api-gateway` et `frontend` restent plutôt stateless, donc des Deployments sont adaptés.
+
+### Étape 5 — task-service et notification-service
+
+#### 1. Comment le notification-service consomme-t-il les événements Redis ?
+
+Le `notification-service` consomme les événements Redis avec le mécanisme Pub/Sub.
+
+Dans `notification-service/src/subscriber.js`, il crée un client Redis, se connecte à Redis, puis s'abonne aux channels :
+
+```js
+task.created
+task.status_changed
+```
+
+Quand le `task-service` publie un événement, le `notification-service` reçoit le message, le parse en JSON, puis crée une notification en mémoire.
+
+#### 2. Qu'est-ce que cela implique sur le nombre de replicas à choisir ? Pour quel(s) service(s) ?
+
+Cela implique de garder le `notification-service` à `1` replica dans cette version.
+
+Le `task-service`, lui, peut avoir plusieurs replicas, car il est stateless : il écrit les tâches dans PostgreSQL et publie les événements dans Redis.
+
+Choix retenu :
+
+```text
+task-service: 2 replicas
+notification-service: 1 replica
+```
+
+#### 3. Justifiez votre choix.
+
+Le `notification-service` stocke les notifications dans un tableau en mémoire. Si on lance plusieurs replicas, chaque pod aura son propre état local.
+
+En plus, avec Redis Pub/Sub, plusieurs abonnés peuvent recevoir les mêmes événements. Plusieurs replicas du `notification-service` risqueraient donc de créer des notifications dupliquées ou incohérentes selon le pod qui répond à la requête.
+
+C'est pour cela que le `notification-service` reste à `1` replica. Le `task-service` peut être répliqué, car il ne garde pas d'état local important.
+
+### Étape 7 — api-gateway et frontend
+
+#### 1. Que sert-il ? De la logique métier ou des fichiers statiques ?
+
+`api-gateway` sert de point d'entrée HTTP. Il exécute du code applicatif : vérification JWT, routage et proxy vers `user-service`, `task-service` et `notification-service`.
+
+`frontend` sert des fichiers statiques React compilés via nginx : HTML, CSS et JavaScript. Il ne contient pas de logique métier côté serveur.
+
+#### 2. Y a-t-il un état partagé entre les requêtes qui pourrait poser problème avec plusieurs instances ?
+
+Non. `api-gateway` est stateless : il vérifie les tokens JWT et relaie les requêtes, mais ne stocke pas d'état local important entre deux requêtes.
+
+Le `frontend` sert uniquement des fichiers statiques. Plusieurs replicas peuvent servir les mêmes fichiers sans conflit.
+
+#### 3. Quel est l'impact d'une indisponibilité momentanée de l'un d'entre eux en staging ?
+
+Si `api-gateway` est indisponible, l'application devient pratiquement inutilisable côté client, car toutes les routes `/api` passent par lui.
+
+Si `frontend` est indisponible, l'interface web n'est plus accessible, mais les services backend peuvent encore fonctionner et être testés directement.
+
+En staging, l'impact est gênant mais moins critique qu'en production.
+
+#### 4. Exécute-t-il du code à chaque requête ou sert-il des fichiers précompilés ?
+
+`api-gateway` exécute du code à chaque requête : middleware d'authentification, logs, métriques et proxy HTTP. Il a donc besoin de ressources plus élevées :
+
+```yaml
+requests:
+  memory: 128Mi
+  cpu: 100m
+limits:
+  memory: 256Mi
+  cpu: 300m
+```
+
+`frontend` sert des fichiers précompilés avec nginx. Il consomme moins de CPU et de mémoire :
+
+```yaml
+requests:
+  memory: 32Mi
+  cpu: 25m
+limits:
+  memory: 96Mi
+  cpu: 100m
+```
+
+#### Choix des replicas
+
+```text
+api-gateway: 2 replicas
+frontend: 2 replicas
+```
+
+Les deux sont stateless, donc faciles à répliquer. `api-gateway` est critique car toutes les requêtes API passent par lui. Le `frontend` est aussi répliqué pour éviter qu'un seul pod rende l'interface indisponible.
+
+### Partie 2 — Ingress
+
+#### 1. Essayez de créer un compte sur l'interface. Est-ce que ça fonctionne ?
+
+Oui, la création de compte fonctionne depuis l'Ingress. La requête passe par la chaîne :
+
+```text
+Ingress -> api-gateway -> user-service -> PostgreSQL
+```
+
+Le `user-service` répond bien et l'utilisateur est créé en base.
+
+#### 2. Comment accéder à PostgreSQL depuis votre machine ?
+
+PostgreSQL est exposé dans le cluster avec un Service interne. Pour y accéder depuis la machine, on peut utiliser un port-forward :
+
+```bash
+kubectl port-forward -n staging svc/postgres 5432:5432
+```
+
+Puis, dans un autre terminal :
+
+```bash
+psql postgresql://taskflow:taskflow@localhost:5432/taskflow
+```
+
+On peut aussi entrer directement dans le pod :
+
+```bash
+kubectl exec -it -n staging postgres-0 -- psql -U taskflow -d taskflow
+```
+
+#### 3. Qu'est-ce qui est fait dans Compose et qui n'existe pas encore dans les manifests ?
+
+Dans `docker-compose.yml`, PostgreSQL monte directement le script d'initialisation :
+
+```yaml
+./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+```
+
+Dans Kubernetes, ce montage n'existait pas au départ. Il a fallu le reproduire avec une ConfigMap montée dans `/docker-entrypoint-initdb.d`.
+
+Docker Compose expose aussi directement des ports sur la machine hôte, alors que Kubernetes utilise des Services internes et un Ingress pour exposer l'application.
+
+Compose utilise aussi `env_file: .env`, alors que Kubernetes sépare la configuration entre ConfigMap et Secret.
+
+### Service vs Ingress
+
+#### 1. Pourquoi ne pas se connecter directement sur `localhost:5432` ?
+
+Parce que PostgreSQL est exposé avec un Service Kubernetes interne de type `ClusterIP`.
+
+Un `ClusterIP` rend le service accessible à l'intérieur du cluster, par exemple depuis les autres pods avec :
+
+```text
+postgres:5432
+```
+
+Mais il ne publie pas le port `5432` sur la machine hôte. Depuis la machine, `localhost:5432` ne pointe donc pas vers PostgreSQL Kubernetes.
+
+Pour y accéder depuis la machine, il faut créer un tunnel avec `kubectl port-forward`.
+
+#### 2. Quel composant fait réellement le routage HTTP décrit dans l'Ingress ?
+
+Le routage HTTP est fait par le contrôleur `ingress-nginx`, plus précisément par le pod `ingress-nginx-controller`.
+
+L'objet Ingress ne route pas lui-même le trafic. Il décrit seulement les règles :
+
+```text
+/api -> api-gateway
+/    -> frontend
+```
+
+Le composant qui lit ces règles et configure le routage réel est l'Ingress Controller.
+
+Il est apparu dans le cluster après l'application du manifest officiel kind :
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+```
+
+#### 3. Qui joue le rôle de load balancer entre les replicas de task-service ?
+
+Le load balancing interne entre les replicas de `task-service` est assuré par le Service Kubernetes `task-service`.
+
+L'Ingress route le trafic HTTP externe vers `api-gateway`. Ensuite, `api-gateway` appelle :
+
+```text
+http://task-service:3002
+```
+
+Ce nom DNS pointe vers le Service Kubernetes `task-service`, qui sélectionne les pods avec :
+
+```yaml
+selector:
+  app: task-service
+```
+
+L'Ingress sert donc surtout de point d'entrée HTTP depuis l'extérieur du cluster. Le load balancing interne entre replicas est assuré par les Services Kubernetes.
+
+### Scénario 1 — Self-healing
+
+#### Que voyez-vous et pourquoi Kubernetes recrée les Pods ?
+
+Avant la suppression, le Deployment `task-service` avait deux replicas disponibles.
+
+Après la commande :
+
+```bash
+kubectl delete pod -n staging -l app=task-service
+```
+
+les deux pods ont été supprimés. Kubernetes a immédiatement recréé deux nouveaux pods. Quelques secondes plus tard, ils sont repassés en `1/1 Running`.
+
+Kubernetes recrée les pods parce que `task-service` est géré par un Deployment avec `replicas: 2`. Le Deployment délègue à un ReplicaSet la responsabilité de maintenir en permanence deux pods correspondant au selector `app=task-service`.
+
+Quand on supprime manuellement les pods, l'état réel du cluster ne correspond plus à l'état désiré. Le contrôleur Kubernetes détecte qu'il manque deux replicas et crée automatiquement de nouveaux pods. C'est le mécanisme de self-healing.
+
+### Scénario 2 — Readiness probe
+
+#### 1. Dans quel état sont les pods du task-service ?
+
+Les pods du `task-service` sont en `Running`, mais pas `Ready`.
+
+Le conteneur tourne, mais Kubernetes ne le considère pas prêt à recevoir du trafic, car la readiness probe appelle :
+
+```text
+/does-not-exist
+```
+
+Cette route n'existe pas, donc la probe échoue et la colonne READY reste à `0/1`.
+
+#### 2. Quels services répondent, lesquels ne répondent pas ?
+
+Le `frontend` répond encore, car nginx sert les fichiers statiques.
+
+`api-gateway` répond aussi, par exemple sur :
+
+```bash
+curl http://localhost/api/health
+```
+
+`user-service` répond aussi : on peut créer un compte ou se connecter, car il dépend surtout de PostgreSQL.
+
+En revanche, la création de tâche ne fonctionne pas. Le `task-service` n'est pas considéré comme Ready, donc il est retiré des endpoints du Service Kubernetes `task-service`.
+
+Résultat :
+
+```text
+frontend: répond
+api-gateway: répond
+user-service: répond
+postgres: répond
+task-service: ne reçoit pas de trafic via le Service
+création de tâche: échoue
+```
+
+#### 3. Réessayez de créer une tâche après correction.
+
+Après avoir remis la readiness probe sur `/health` et réappliqué le Deployment, les pods du `task-service` repassent en `1/1 Running`.
+
+La création de tâche refonctionne, car le Service Kubernetes `task-service` retrouve des endpoints prêts.
+
+#### Différence entre readiness probe et liveness probe
+
+La `readinessProbe` indique si un pod est prêt à recevoir du trafic. Si elle échoue, le pod continue de tourner, mais Kubernetes le retire des endpoints du Service. Il n'est donc plus utilisé pour répondre aux requêtes.
+
+La `livenessProbe` indique si le conteneur est encore vivant. Si elle échoue, Kubernetes considère que le conteneur est bloqué ou cassé, puis le redémarre.
+
+Si on avait cassé la `livenessProbe` au lieu de la `readinessProbe`, les pods du `task-service` auraient été redémarrés en boucle. On aurait vu le nombre de `RESTARTS` augmenter, avec un état instable de redémarrages répétés.
+
+### Scénario 3 — Rolling update
+
+#### CHANGE-CAUSE avant annotation
+
+Avant annotation, l'historique du rollout affichait :
+
+```text
+REVISION  CHANGE-CAUSE
+1         <none>
+2         <none>
+```
+
+Ce n'est pas utile, car on ne sait pas ce qui a changé entre les révisions.
+
+Après annotation :
+
+```bash
+kubectl annotate deployment/frontend -n staging kubernetes.io/change-cause="passage à v1.0.1 - nouvelle interface"
+```
+
+l'historique devient lisible :
+
+```text
+REVISION  CHANGE-CAUSE
+1         <none>
+2         passage à v1.0.1 - nouvelle interface
+```
+
+#### 1. Pendant le rolling update, le nombre de pods disponibles a-t-il diminué ? Pourquoi ?
+
+Non, le frontend est resté disponible. Kubernetes a gardé les anciens pods actifs pendant que les nouveaux démarraient.
+
+Le Service ne route le trafic que vers les pods prêts. Tant que les nouveaux pods ne sont pas `1/1`, les anciens continuent de servir l'application.
+
+#### 2. Que se serait-il passé si le nouveau pod n'était jamais passé en `1/1` ?
+
+Le rollout serait resté bloqué. Le nouveau pod n'aurait pas été ajouté aux endpoints du Service, donc il n'aurait pas reçu de trafic.
+
+Les anciens pods auraient continué à servir l'application, et `kubectl rollout status` aurait fini par attendre indéfiniment ou timeout.
+
+#### 3. Pourquoi annoter les révisions est-il important en équipe ?
+
+Sans annotation, `CHANGE-CAUSE` affiche `<none>`, donc on ne sait pas pourquoi une révision existe.
+
+En équipe, annoter permet de comprendre rapidement quelle version a été déployée, pourquoi, et quelle révision choisir en cas de rollback.
+
+#### 4. `kubectl rollout undo` est-il suffisant comme stratégie de rollback en production ?
+
+Non, ce n'est pas suffisant en production.
+
+`kubectl rollout undo` ne rollback que le manifest du Deployment. Il ne gère pas les migrations de base de données, les changements de configuration, les secrets, les dépendances entre frontend et backend, ni la validation métier.
+
+En production, il faut une stratégie plus complète : manifests versionnés, CI/CD, monitoring, health checks, rollback testé, migrations compatibles et éventuellement canary ou blue/green deployment.
+
+### Réflexion théorique
+
+#### 1. Identifiez au moins 3 valeurs répétées. Que se passe-t-il si vous devez changer l'une d'elles pour la production ?
+
+On a répété plusieurs valeurs dans les manifests Kubernetes, par exemple :
+
+- le namespace `staging`
+- les noms d'images Docker, comme `lordtibu/taskflow-frontend:v1.0.0` ou `lordtibu/taskflow-api-gateway:v1.0.0`
+- les URLs internes des services, comme `http://user-service:3001`, `http://task-service:3002`, `redis://redis:6379`, `postgres:5432`
+- les ports applicatifs, comme `3000`, `3001`, `3002`, `3003`, `6379`, `5432`
+- les noms des Services Kubernetes, comme `user-service`, `task-service`, `redis`, `postgres`
+
+Si on doit changer une de ces valeurs pour un déploiement en production, il faut modifier manuellement plusieurs fichiers YAML.
+
+Par exemple, passer de `staging` à `production` oblige à vérifier tous les manifests concernés. Changer le registry Docker ou le tag d'image oblige aussi à mettre à jour chaque Deployment.
+
+Concrètement, cela augmente le risque d'erreur : oublier un fichier, garder une ancienne URL, déployer une mauvaise image ou créer une configuration incohérente entre services.
+
+C'est pour cela qu'en production on utilise souvent des outils comme Kustomize ou Helm, qui permettent de centraliser les valeurs variables selon l'environnement.

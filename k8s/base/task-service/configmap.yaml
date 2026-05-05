@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: task-service-cm
+  namespace: staging
+data:
+  PORT: "3002"
+  LOG_LEVEL: info
+  DATABASE_URL: postgresql://taskflow:taskflow@postgres:5432/taskflow
+  REDIS_URL: redis://redis:6379
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  TASK_SERVICE_OTEL_SERVICE_NAME: task-service

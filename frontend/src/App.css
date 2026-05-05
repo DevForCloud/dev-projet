@@ -19,6 +19,14 @@
   color: var(--accent);
 }
 .nav-logo-dot { opacity: 0.5; }
+.nav-version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--bg);
+  background: var(--accent);
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
 
 .nav-links {
   display: flex;
