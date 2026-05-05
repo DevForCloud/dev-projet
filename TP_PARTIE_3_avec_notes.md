@@ -704,9 +704,28 @@ Vérifiez dans le navigateur que l'ancienne version est restaurée. Consultez à
 ---
 
 > 1. Pendant le rolling update, le nombre de pods disponibles a-t-il diminué ? Pourquoi ?
+
+```text
+Non, le frontend est resté disponible. Kubernetes a gardé les anciens pods actifs pendant que les nouveaux démarraient. Le Service ne route le trafic que vers les pods prêts, donc tant que les nouveaux pods ne sont pas 1/1, les anciens continuent de servir l’application.
+```
+
 > 2. Que se serait-il passé si le nouveau pod n'était jamais passé en `1/1` ?
+
+```text
+Le rollout serait resté bloqué. Le nouveau pod n’aurait pas été ajouté aux endpoints du Service, donc il n’aurait pas reçu de trafic. Les anciens pods auraient continué à servir l’application, et kubectl rollout status aurait fini par attendre indéfiniment ou timeout.
+```
+
 > 3. Pourquoi annoter les révisions est-il important en équipe ?
+
+```text
+Sans annotation, CHANGE-CAUSE affiche <none>, donc on ne sait pas pourquoi une révision existe. En équipe, annoter permet de comprendre rapidement quelle version a été déployée, pourquoi, et quelle révision choisir en cas de rollback.
+```
+
 > 4. `kubectl rollout undo` est-il suffisant comme stratégie de rollback en production ? Quelles limites voyez-vous ?
+
+```text
+Non, ce n’est pas suffisant en production. Il ne rollback que le manifest du Deployment. Il ne gère pas les migrations de base de données, les changements de configuration, les secrets, les dépendances entre frontend/backend, ni la validation métier. En production, il faut une stratégie plus complète : manifests versionnés, CI/CD, monitoring, health checks, rollback testé et migrations compatibles.
+```
 
 ---
 
@@ -717,6 +736,19 @@ Vérifiez dans le navigateur que l'ancienne version est restaurée. Consultez à
 > Répondez dans votre `REPORT.md` :
 >
 > 1. Identifiez au moins 3 valeurs que vous avez répétées dans plusieurs fichiers (namespace, nom d'image, URL de service...). Que se passe-t-il concrètement si vous devez changer l'une d'elles pour un déploiement en production ?
+
+```text
+On a répété plusieurs valeurs dans les manifests Kubernetes, par exemple :
+    - Le namespace staging  
+    - Les noms d’images Docker, comme lordtibu/taskflow-frontend:v1.0.0, lordtibu/taskflow-api-gateway:v1.0.0, etc.
+    - Les URLs internes des services, par exemple http://user-service:3001, http://task-service:3002, redis://redis:6379, postgres:5432
+    - Les ports applicatifs, comme 3000, 3001, 3002, 3003, 6379, 5432
+    - Les noms des services Kubernetes, comme user-service, task-service, redis, postgres
+
+Si on doit changer une de ces valeurs pour un déploiement en production, il faut modifier manuellement plusieurs fichiers YAML. Par exemple, passer de staging à production oblige à vérifier tous les manifests concernés. Changer le registry Docker ou le tag d’image oblige aussi à mettre à jour chaque Deployment.
+
+Concrètement, cela augmente le risque d’erreur : oublier un fichier, garder une ancienne URL, déployer une mauvaise image, ou créer une configuration incohérente entre services. C’est pour cela qu’en production on utilise souvent des outils comme Kustomize ou Helm, qui permettent de centraliser les valeurs variables selon l’environnement.
+```
 
 ---
 

@@ -15,6 +15,7 @@ function Nav() {
   return (
     <nav className="nav">
       <span className="nav-logo">TASKFLOW<span className="nav-logo-dot">_</span></span>
+      <span className="nav-version">STAGING v1.0.1</span>
       <div className="nav-links">
         <Link to="/tasks">tâches</Link>
         <Link to="/notifications">notifications</Link>
