@@ -644,3 +644,267 @@ Valeurs répétées :
 Si on doit changer une de ces valeurs pour la production, il faut modifier plusieurs fichiers YAML manuellement. Cela augmente le risque d'oublier un fichier, de garder une ancienne URL, de déployer une mauvaise image ou de créer une configuration incohérente.
 
 C'est pour cela qu'en production on utilise souvent Kustomize ou Helm pour centraliser les valeurs variables selon l'environnement.
+
+## Partie 4A — Helm
+
+### Réflexion théorique — Helm et répétition
+
+#### 1. Comment Helm résout-il le problème de répétition ? Quel fichier joue le rôle central ?
+
+Helm résout le problème de répétition en transformant les manifests Kubernetes en templates réutilisables.
+
+Au lieu de répéter partout le namespace, les images, les tags, les ports, les replicas, les URLs internes ou les ressources, on centralise ces valeurs dans un fichier de valeurs. Les templates les réutilisent ensuite avec la syntaxe Helm :
+
+```yaml
+image: "{{ .Values.image.prefix }}-task-service:{{ .Values.taskService.tag }}"
+replicas: {{ .Values.taskService.replicaCount }}
+```
+
+Le fichier central pour ce problème est `values.yaml`. Il contient les valeurs configurables du déploiement. `Chart.yaml` reste important, mais il décrit surtout le chart : nom, version, description et dépendances.
+
+#### 2. À partir de quel niveau de complexité Helm devient-il indispensable ?
+
+Helm devient indispensable dès qu'on dépasse un petit déploiement statique.
+
+Dans TaskFlow, on a déjà plusieurs services : `user-service`, `task-service`, `notification-service`, `api-gateway`, `frontend`, PostgreSQL, Redis et Ingress. On a aussi beaucoup de valeurs répétées : images, tags, ports, replicas, URLs, ressources et namespace.
+
+Avec un seul environnement, Helm est déjà utile. Il devient vraiment indispensable dès qu'on a plusieurs environnements, par exemple `staging` et `production`, car il faut changer proprement les tags d'images, les ressources, les replicas, les secrets, les noms de domaine Ingress ou les paramètres de base de données.
+
+Sans Helm, il faut dupliquer ou modifier beaucoup de YAML à la main. Avec Helm, on garde les mêmes templates et on change seulement les fichiers de valeurs ou les surcharges passées à la commande.
+
+### Étape 1 — Chart TaskFlow, Redis et PostgreSQL
+
+#### 1. Pourquoi Redis se prête-t-il à un chart officiel ?
+
+Redis se prête à un chart officiel parce que c'est un composant d'infrastructure générique et standard. Sa configuration n'est pas spécifique à TaskFlow : port `6379`, Service Kubernetes, probes, ressources, authentification, persistance éventuelle, réplication ou mode standalone.
+
+Ces besoins sont communs à beaucoup de projets. Il est donc préférable d'utiliser un chart maintenu par la communauté, comme Bitnami Redis, plutôt que de maintenir nous-mêmes un template Redis maison.
+
+Dans notre chart, le Service Redis généré par Bitnami s'appelle `redis-master`, donc les services applicatifs utilisent :
+
+```yaml
+REDIS_URL: redis://redis-master:6379
+```
+
+#### 2. Pourquoi conserver un template maison pour PostgreSQL plutôt que `bitnami/postgresql` ?
+
+On a conservé un template maison pour PostgreSQL parce que notre configuration est spécifique au projet et au TP.
+
+Deux éléments rendraient la migration vers `bitnami/postgresql` coûteuse :
+
+- le script d'initialisation SQL custom, monté dans `/docker-entrypoint-initdb.d`, qui crée les tables `users`, `tasks`, `notifications` et insère des données de départ
+- le Secret maison et les variables associées `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, utilisées pour construire les `DATABASE_URL` des services applicatifs
+
+Avec Bitnami, il faudrait adapter les noms de Secrets, les clés, le mécanisme d'initialisation et les chaînes de connexion attendues par les services.
+
+### Étape 2 — Values par environnement et secrets
+
+#### Problème des valeurs sensibles dans `values.production.yaml`
+
+Un fichier `values.production.yaml` est versionné dans Git. Il ne doit donc pas contenir de vrais secrets : mot de passe PostgreSQL, token JWT, clé API, secret Docker, etc.
+
+Même dans un dépôt privé, un secret versionné est considéré comme compromis. Il peut être lu par toutes les personnes ayant accès au dépôt, rester dans l'historique Git, être copié dans un fork, apparaître dans des logs CI/CD ou être exposé par erreur.
+
+La stratégie retenue est de garder `values.yaml` et `values.production.yaml` versionnés, mais uniquement avec des placeholders non sensibles :
+
+```yaml
+postgres:
+  password: REMPLACER_PAR_MOT_DE_PASSE_FORT
+
+apiGateway:
+  jwtSecret: REMPLACER_PAR_SECRET_JWT_FORT
+```
+
+Il ne faut pas supprimer `values.yaml` du dépôt : un chart Helm doit rester compréhensible et fournir une structure de configuration par défaut. Les vraies valeurs sont injectées au moment du déploiement.
+
+#### 1. Comment déployer avec des valeurs sensibles sans les commiter ?
+
+On injecte les secrets au moment du déploiement avec des variables d'environnement ou un gestionnaire de secrets.
+
+Exemple local :
+
+```bash
+export POSTGRES_PASSWORD='mot-de-passe-fort'
+export JWT_SECRET='secret-jwt-fort'
+```
+
+Puis :
+
+```bash
+helm upgrade --install taskflow ./helm/taskflow \
+  -n production \
+  -f helm/taskflow/values.production.yaml \
+  --set-string postgres.password="$POSTGRES_PASSWORD" \
+  --set-string apiGateway.jwtSecret="$JWT_SECRET"
+```
+
+On peut aussi créer les Secrets Kubernetes séparément et faire référencer ces Secrets par le chart.
+
+#### 2. Pourquoi est-ce plus sûr que de mettre les valeurs dans un dépôt privé ?
+
+Cette solution est plus sûre parce que les secrets ne sont pas stockés dans Git.
+
+Un dépôt privé reste accessible à plusieurs personnes, peut être cloné, utilisé par la CI, forké ou exposé par erreur. Surtout, un secret commité reste dans l'historique Git même après suppression du fichier.
+
+Avec des variables d'environnement ou un secret manager, les valeurs sensibles ne sont fournies qu'au moment du déploiement. Elles ne sont pas présentes dans le dépôt ni dans son historique.
+
+#### 3. Quel problème résout `helm-secrets` que cette solution ne résout pas ?
+
+Notre solution évite de commiter les secrets en clair, mais elle ne permet pas de versionner proprement les valeurs sensibles.
+
+`helm-secrets` permet de commiter un fichier de valeurs chiffré, par exemple `secrets.production.yaml`, puis de le déchiffrer à la volée au moment du `helm upgrade`.
+
+Il devient nécessaire dans un contexte GitOps ou CI/CD avancé, quand plusieurs personnes ou environnements doivent partager les mêmes secrets de manière contrôlée, quand on veut historiser leurs changements, ou quand le déploiement doit être entièrement reproductible depuis Git sans exposer les secrets en clair.
+
+#### 4. Comment passer `$POSTGRES_PASSWORD` dans GitHub Actions sans l'afficher en clair ?
+
+On stocke la valeur dans GitHub Actions Secrets, puis on l'injecte comme variable d'environnement dans le step de déploiement :
+
+```yaml
+- name: Deploy with Helm
+  env:
+    POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+    JWT_SECRET: ${{ secrets.JWT_SECRET }}
+  run: |
+    helm upgrade --install taskflow ./helm/taskflow \
+      -n production \
+      -f helm/taskflow/values.production.yaml \
+      --set-string postgres.password="$POSTGRES_PASSWORD" \
+      --set-string apiGateway.jwtSecret="$JWT_SECRET"
+```
+
+GitHub masque automatiquement les valeurs issues de `secrets.*` dans les logs. Il faut éviter de faire `echo $POSTGRES_PASSWORD` ou d'activer un mode debug qui afficherait les commandes avec leurs valeurs expansées.
+
+### Étape 3 — Installation du chart
+
+#### 1. Que se passe-t-il si une variable référencée dans un template n'a pas de valeur ?
+
+Si une valeur référencée est absente, Helm peut échouer au rendu ou produire un YAML invalide.
+
+Test effectué :
+
+```bash
+helm template taskflow ./helm/taskflow \
+  --namespace staging \
+  --values ./helm/taskflow/values.yaml \
+  --show-only templates/task-service.yaml \
+  --set-json taskService=null
+```
+
+Résultat :
+
+```text
+Error: template: taskflow/templates/task-service.yaml:20:22:
+executing "taskflow/templates/task-service.yaml" at <.Values.taskService.replicaCount>:
+nil pointer evaluating interface {}.replicaCount
+```
+
+Ici Helm échoue parce que le template essaie d'accéder à `.Values.taskService.replicaCount` alors que `taskService` n'existe plus.
+
+Pour éviter ce type de problème, on vérifie le rendu avec `helm template` et `helm lint`, et on peut utiliser `default` quand une valeur de secours est pertinente.
+
+#### 2. Différences entre `helm template` du task-service et `k8s/base/task-service/deployment.yaml`
+
+Le fichier manuel `k8s/base/task-service/deployment.yaml` contient seulement le `Deployment`.
+
+Le rendu Helm de `templates/task-service.yaml` génère trois objets :
+
+```text
+ConfigMap
+Service
+Deployment
+```
+
+Différences observées :
+
+- Helm ajoute des commentaires de source, par exemple `# Source: taskflow/templates/task-service.yaml`
+- les variables sont remplacées par les valeurs finales : image, replicas, `REDIS_URL`, ressources
+- dans `k8s/base`, les ressources sont séparées en fichiers `configmap.yaml`, `service.yaml`, `deployment.yaml`
+- l'ordre de certaines clés peut changer, par exemple `limits` avant `requests`
+
+Ces différences existent parce que Helm stocke des templates paramétrables et génère le YAML final à partir de `values.yaml`. Le but est d'éviter la duplication et de pouvoir changer les valeurs selon l'environnement.
+
+### Étape 4 — Mise à jour avec helm-diff
+
+#### 1. Commande de prévisualisation et sortie
+
+Plugin utilisé : `helm-diff`.
+
+Installation :
+
+```bash
+helm plugin install https://github.com/databus23/helm-diff
+```
+
+Modification effectuée dans `helm/taskflow/values.yaml` :
+
+```diff
+notificationService:
+-  replicaCount: 1
++  replicaCount: 2
+  tag: v1.0.0
+```
+
+Commande de prévisualisation :
+
+```bash
+helm diff upgrade taskflow ./helm/taskflow \
+  -n staging \
+  --values ./helm/taskflow/values.yaml
+```
+
+Sortie importante :
+
+```diff
+staging, notification-service, Deployment (apps) has changed:
+  spec:
+-   replicas: 1
++   replicas: 2
+```
+
+Cette sortie montre que le prochain `helm upgrade` va modifier le Deployment `notification-service` en passant de `1` à `2` replicas.
+
+#### 2. Dans quel scénario helm-diff est-il particulièrement critique ?
+
+`helm-diff` est particulièrement critique lors d'un changement de `image.<service>.tag`.
+
+Un changement de `replicaCount` modifie surtout le nombre de pods. Kubernetes ajoute ou retire des replicas, et le Service n'envoie du trafic qu'aux pods Ready.
+
+Un changement de tag d'image déclenche un rolling update. Kubernetes crée des pods avec la nouvelle image, attend qu'ils soient Ready, puis remplace progressivement les anciens. Si la nouvelle image contient un bug mais passe quand même la readiness probe, Kubernetes peut remplacer une version saine par une version cassée.
+
+`helm-diff` permet donc de vérifier avant l'upgrade quelle image va changer, sur quel service et avec quel tag exact. C'est plus critique qu'un simple changement de `replicaCount`.
+
+### Réflexion théorique — Historique des déploiements
+
+#### 1. Qu'avez-vous vu avec `watch kubectl get pods -n staging -o wide` ?
+
+Pendant les upgrades, Kubernetes fait évoluer les pods progressivement.
+
+Lors d'un changement de replicas, un nouveau pod apparaît en `0/1 ContainerCreating`, puis passe en `1/1 Running`. Avec `-o wide`, on voit aussi sur quel noeud chaque pod est schedulé, par exemple `taskflow-worker` ou `taskflow-worker2`.
+
+Lors d'un rolling update, les anciens pods et les nouveaux pods peuvent cohabiter temporairement. Kubernetes garde les anciens pods disponibles tant que les nouveaux ne sont pas prêts.
+
+#### 2. Quelle information présente dans `helm history` est absente de `kubectl rollout history` ?
+
+`helm history` donne une vision au niveau de la release Helm complète. Il affiche le numéro de révision Helm, la date, le statut, le chart, l'app version et la description de l'action : install, upgrade ou rollback.
+
+`kubectl rollout history` est limité à un Deployment précis. Il ne sait pas quelle release Helm complète a été installée ou mise à jour.
+
+Cette information est critique en production, car une application ne se résume pas à un Deployment. Une release peut modifier en même temps des Deployments, Services, ConfigMaps, Secrets, Ingress et sous-charts comme Redis. Avec `helm history`, on sait quelle révision globale de l'application a été déployée.
+
+#### 3. Différence entre `helm rollback taskflow 1` et `kubectl rollout undo deployment/task-service`
+
+`kubectl rollout undo deployment/task-service` rollback uniquement le Deployment `task-service`.
+
+Il ne rollback pas les autres ressources associées : ConfigMap, Secret, Service, Ingress, autres Deployments ou dépendances Helm comme Redis.
+
+`helm rollback taskflow 1` rollback toute la release Helm `taskflow` vers la révision 1. Il restaure l'ensemble des ressources gérées par Helm dans un état cohérent.
+
+La différence fondamentale est donc le périmètre :
+
+```text
+kubectl rollout undo = rollback d'un seul Deployment
+helm rollback = rollback de toute la release applicative
+```
+
+En production, Helm est plus adapté pour revenir à une version cohérente de l'application complète.

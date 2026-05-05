@@ -17,7 +17,7 @@ spec:
         - name: dockerhub-secret
       containers:
         - name: user-service
-          image: "{{ .Values.image.prefix }}-user-service:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.prefix }}-user-service:{{ .Values.userService.tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: PORT
@@ -26,6 +26,8 @@ spec:
               value: "postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }}"
             - name: OTEL_SERVICE_NAME
               value: user-service
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.otel.endpoint | quote }}
           ports:

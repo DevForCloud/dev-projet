@@ -1,19 +1,22 @@
 image:
-  prefix: bruce1000/taskflow
+  prefix: lordtibu/taskflow
+  tag: v1.0.0
   pullPolicy: IfNotPresent
 
 postgres:
   user: taskflow
-  password: taskflow
+  password: REMPLACER_PAR_MOT_DE_PASSE_DEV
   db: taskflow
   storageSize: 1Gi
 
 otel:
   endpoint: http://otel-collector:4318
 
+logLevel: info
+
 userService:
   replicaCount: 2
-  tag: v1.0.1
+  tag: v1.0.0
   resources:
     requests:
       memory: "128Mi"
@@ -23,16 +26,53 @@ userService:
       cpu: "200m"
 
 frontend:
-# [...]
+  replicaCount: 2
+  tag: v1.0.1
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "25m"
+    limits:
+      memory: "96Mi"
+      cpu: "100m"
 
 taskService:
-# [...]
+  replicaCount: 2
+  tag: v1.0.0
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "300m"
 
 notificationService:
-# [...]
+  replicaCount: 2
+  tag: v1.0.0
+  resources:
+    requests:
+      memory: "96Mi"
+      cpu: "75m"
+    limits:
+      memory: "192Mi"
+      cpu: "200m"
 
 apiGateway:
-# [...]
+  replicaCount: 2
+  tag: v1.0.0
+  jwtSecret: REMPLACER_PAR_SECRET_JWT_DEV
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "300m"
+
+ingress:
+  enabled: true
+  className: nginx
 
 redis:
   enabled: true
